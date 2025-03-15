@@ -1,0 +1,177 @@
+{% extends "base.html" %}
+
+{% block title %}{{ title }}{% endblock %}
+
+{% block content %}
+<div class="container">
+    <div class="card">
+        <div class="card-header d-flex justify-content-between align-items-center">
+            <h2 class="section-header m-0">Schedule Recording - {{ station.name }}</h2>
+        </div>
+        <div class="card-body">
+            <form action="/schedule_recording" method="post" enctype="multipart/form-data">
+                <input type="hidden" name="station_id" value="{{ station.id }}">
+                
+                <div class="row mb-3">
+                    <div class="col-md-6">
+                        <label for="start_date" class="form-label">Date</label>
+                        <input type="date" class="form-control" id="start_date" name="start_date" required>
+                    </div>
+                    <div class="col-md-6">
+                        <label for="start_time" class="form-label">Time</label>
+                        <input type="time" class="form-control" id="start_time" name="start_time" required>
+                    </div>
+                </div>
+                
+                <div class="row mb-3">
+                    <div class="col-md-6">
+                        <label for="duration" class="form-label">Duration (minutes)</label>
+                        <input type="number" class="form-control" id="duration" name="duration" 
+                               min="1" max="360" value="60" required>
+                    </div>
+                    <div class="col-md-6">
+                        <label for="recurring_type" class="form-label">Frequency</label>
+                        <select class="form-select" id="recurring_type" name="recurring_type">
+                            <option value="once">One-time recording</option>
+                            <option value="daily">Every day</option>
+                            <option value="weekly">Every week</option>
+                            <option value="weekdays">Weekdays only</option>
+                            <option value="weekends">Weekends only</option>
+                            <option value="monthly">Every month</option>
+                        </select>
+                    </div>
+                </div>
+                
+                <div id="podcastDetailsCard" style="display: none;">
+                    <hr class="mb-4">
+                    <h3 class="section-header">Podcast Information</h3>
+                    <p class="text-muted mb-4">For recurring recordings that will be shared as a podcast</p>
+                    
+                    <div class="row mb-3">
+                        <div class="col-md-6">
+                            <label for="podcast_title" class="form-label">Podcast Title</label>
+                            <input type="text" class="form-control" id="podcast_title" name="podcast_title" 
+                                   placeholder="My Awesome Radio Show">
+                            <div class="form-text">Individual episodes will be named [Title]-[Date]</div>
+                        </div>
+                        <div class="col-md-6">
+                            <label for="podcast_language" class="form-label">Language</label>
+                            <select class="form-select" id="podcast_language" name="podcast_language">
+                                <option value="en">English</option>
+                                <option value="es">Spanish</option>
+                                <option value="fr">French</option>
+                                <option value="de">German</option>
+                                <option value="it">Italian</option>
+                                <option value="ja">Japanese</option>
+                                <option value="ko">Korean</option>
+                                <option value="zh">Chinese</option>
+                                <option value="ar">Arabic</option>
+                                <option value="ru">Russian</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="podcast_description" class="form-label">Podcast Description</label>
+                        <textarea class="form-control" id="podcast_description" name="podcast_description" rows="3"
+                                  placeholder="Describe your podcast for listeners"></textarea>
+                    </div>
+
+                    <div class="row mb-3">
+                        <div class="col-md-6">
+                            <label for="podcast_author" class="form-label">Author/Host</label>
+                            <input type="text" class="form-control" id="podcast_author" name="podcast_author">
+                        </div>
+                        <div class="col-md-6">
+                            <label for="podcast_email" class="form-label">Contact Email</label>
+                            <input type="email" class="form-control" id="podcast_email" name="podcast_email">
+                        </div>
+                    </div>
+
+                    <div class="row mb-3">
+                        <div class="col-md-6">
+                            <label for="podcast_category" class="form-label">Primary Category</label>
+                            <select class="form-select" id="podcast_category" name="podcast_category">
+                                <option value="Arts">Arts</option>
+                                <option value="Business">Business</option>
+                                <option value="Comedy">Comedy</option>
+                                <option value="Education">Education</option>
+                                <option value="Fiction">Fiction</option>
+                                <option value="Government">Government</option>
+                                <option value="History">History</option>
+                                <option value="Health & Fitness">Health & Fitness</option>
+                                <option value="Kids & Family">Kids & Family</option>
+                                <option value="Leisure">Leisure</option>
+                                <option value="Music" selected>Music</option>
+                                <option value="News">News</option>
+                                <option value="Religion & Spirituality">Religion & Spirituality</option>
+                                <option value="Science">Science</option>
+                                <option value="Society & Culture">Society & Culture</option>
+                                <option value="Sports">Sports</option>
+                                <option value="Technology">Technology</option>
+                                <option value="True Crime">True Crime</option>
+                                <option value="TV & Film">TV & Film</option>
+                            </select>
+                        </div>
+                        <div class="col-md-6">
+                            <label for="podcast_explicit" class="form-label">Content Rating</label>
+                            <select class="form-select" id="podcast_explicit" name="podcast_explicit">
+                                <option value="no" selected>Clean</option>
+                                <option value="yes">Explicit</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="podcast_image" class="form-label">Podcast Cover Image</label>
+                        <input type="file" class="form-control" id="podcast_image" name="podcast_image">
+                        <div class="form-text">Square image (1400x1400 px minimum) in JPG or PNG format</div>
+                    </div>
+                </div>
+                
+                <div class="mt-4 d-flex justify-content-between">
+                    <a href="/" class="btn btn-outline-secondary">
+                        <i class="bi bi-arrow-left"></i> Cancel
+                    </a>
+                    <button type="submit" class="btn btn-primary">
+                        <i class="bi bi-calendar-check"></i> Schedule Recording
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    // Set today as the minimum date for the date picker
+    const today = new Date().toISOString().split('T')[0];
+    document.getElementById('start_date').setAttribute('min', today);
+    document.getElementById('start_date').value = today;
+    
+    // Set current time + 1 minute as the default time
+    const now = new Date();
+    now.setMinutes(now.getMinutes() + 1);
+    const hours = String(now.getHours()).padStart(2, '0');
+    const minutes = String(now.getMinutes()).padStart(2, '0');
+    document.getElementById('start_time').value = `${hours}:${minutes}`;
+    
+    // Show/hide podcast details based on recurring selection
+    const recurringTypeSelect = document.getElementById('recurring_type');
+    const podcastDetailsCard = document.getElementById('podcastDetailsCard');
+    
+    function togglePodcastDetails() {
+        if (recurringTypeSelect.value !== 'once') {
+            podcastDetailsCard.style.display = 'block';
+        } else {
+            podcastDetailsCard.style.display = 'none';
+        }
+    }
+    
+    recurringTypeSelect.addEventListener('change', togglePodcastDetails);
+    
+    // Initialize on page load
+    togglePodcastDetails();
+});
+</script>
+{% endblock %}

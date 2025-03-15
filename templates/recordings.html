@@ -1,0 +1,217 @@
+{% extends "base.html" %}
+
+{% block title %}{{ title }}{% endblock %}
+
+{% block content %}
+<div class="container">
+    <h1>Recordings</h1>
+    
+    <!-- Navigation tabs -->
+    <ul class="nav nav-tabs mb-4" id="recordingsTabs" role="tablist">
+        <li class="nav-item" role="presentation">
+            <button class="nav-link active" id="upcoming-tab" data-bs-toggle="tab" data-bs-target="#upcoming" type="button" role="tab" aria-controls="upcoming" aria-selected="true">
+                Upcoming
+            </button>
+        </li>
+        <li class="nav-item" role="presentation">
+            <button class="nav-link" id="past-tab" data-bs-toggle="tab" data-bs-target="#past" type="button" role="tab" aria-controls="past" aria-selected="false">
+                Past Recordings
+            </button>
+        </li>
+    </ul>
+    
+    <!-- Tab content -->
+    <div class="tab-content" id="recordingsTabsContent">
+        <!-- Upcoming recordings -->
+        <div class="tab-pane fade show active" id="upcoming" role="tabpanel" aria-labelledby="upcoming-tab">
+            {% if upcoming_recordings %}
+                <div class="table-responsive">
+                    <table class="table table-hover">
+                        <thead>
+                            <tr>
+                                <th>Station</th>
+                                <th>Start Time</th>
+                                <th>Duration</th>
+                                <th>Status</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for recording in upcoming_recordings %}
+                            <tr>
+                                <td>{{ recording.station_name }}</td>
+                                <td>
+                                    {% if recording.next_run_time %}
+                                        {{ recording.next_run_time.strftime('%Y-%m-%d %H:%M') }}
+                                    {% elif recording.start_time %}
+                                        {{ recording.start_time.strftime('%Y-%m-%d %H:%M') if recording.start_time is not string else recording.start_time }}
+                                    {% else %}
+                                        Unknown
+                                    {% endif %}
+                                    
+                                    {% if recording.recurring %}
+                                        <span class="badge bg-info ms-2" title="{{ recording.recurring }}">
+                                            {{ recording.recurring_type|capitalize }}
+                                        </span>
+                                    {% endif %}
+                                </td>
+                                <td>{{ recording.duration_minutes }} min</td>
+                                <td>
+                                    <span class="badge {% if recording.status == 'scheduled' %}bg-primary{% else %}bg-secondary{% endif %}">
+                                        {{ recording.status|capitalize }}
+                                    </span>
+                                </td>
+                                <td>
+                                    <a href="{{ url_for('delete_recording', recording_id=recording.id) }}" 
+                                       class="btn btn-sm btn-danger" 
+                                       onclick="return confirm('Are you sure you want to cancel this recording?');">
+                                        <i class="bi bi-trash"></i> Cancel
+                                    </a>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            {% else %}
+                <div class="alert alert-info">
+                    <i class="bi bi-info-circle me-2"></i> No upcoming recordings scheduled.
+                </div>
+            {% endif %}
+        </div>
+        
+        <!-- Past recordings -->
+        <div class="tab-pane fade" id="past" role="tabpanel" aria-labelledby="past-tab">
+            {% if past_recordings %}
+                <div class="table-responsive">
+                    <table class="table table-hover">
+                        <thead>
+                            <tr>
+                                <th>Station</th>
+                                <th>Date</th>
+                                <th>Duration</th>
+                                <th>Status</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for recording in past_recordings %}
+                            <tr>
+                                <td>{{ recording.station_name }}</td>
+                                <td>
+                                    {% if recording.actual_start_time %}
+                                        {{ recording.actual_start_time if recording.actual_start_time is string else recording.actual_start_time.strftime('%Y-%m-%d %H:%M') }}
+                                    {% elif recording.start_time %}
+                                        {{ recording.start_time if recording.start_time is string else recording.start_time.strftime('%Y-%m-%d %H:%M') }}
+                                    {% else %}
+                                        Unknown
+                                    {% endif %}
+                                </td>
+                                <td>{{ recording.duration_minutes }} min</td>
+                                <td>
+                                    <span class="badge 
+                                        {% if recording.status == 'Completed' or recording.status == 'completed' %}
+                                            bg-success
+                                        {% elif recording.status == 'Failed' or recording.status == 'failed' %}
+                                            bg-danger
+                                        {% elif recording.status == 'Missing' %}
+                                            bg-warning
+                                        {% else %}
+                                            bg-secondary
+                                        {% endif %}">
+                                        {{ recording.status|capitalize }}
+                                    </span>
+                                </td>
+                                <td>
+                                    {% if recording.status == 'Completed' or recording.status == 'completed' %}
+                                        <div class="btn-group" role="group">
+                                            <!-- Play button that shows audio player when clicked -->
+                                            <button type="button" class="btn btn-sm btn-primary toggle-player" data-recording-id="{{ recording.id }}">
+                                                <i class="bi bi-play"></i> Play
+                                            </button>
+                                            
+                                            <!-- Download button -->
+                                            <a href="{{ url_for('download_recording', recording_id=recording.id) }}" class="btn btn-sm btn-success">
+                                                <i class="bi bi-download"></i> Download
+                                            </a>
+                                            
+                                            <!-- Delete button -->
+                                            <a href="{{ url_for('delete_recording', recording_id=recording.id) }}" 
+                                               class="btn btn-sm btn-danger" 
+                                               onclick="return confirm('Are you sure you want to delete this recording?');">
+                                                <i class="bi bi-trash"></i>
+                                            </a>
+                                        </div>
+                                        
+                                        <!-- Hidden audio player that will be shown when Play is clicked -->
+                                        <div class="audio-player mt-2" id="player-{{ recording.id }}" style="display: none;">
+                                            <audio controls preload="none" class="w-100">
+                                                <source src="{{ url_for('recording_file', recording_id=recording.id) }}" type="audio/mpeg">
+                                                Your browser does not support the audio element.
+                                            </audio>
+                                        </div>
+                                    {% else %}
+                                        <!-- Delete button only -->
+                                        <a href="{{ url_for('delete_recording', recording_id=recording.id) }}" 
+                                           class="btn btn-sm btn-danger" 
+                                           onclick="return confirm('Are you sure you want to delete this recording?');">
+                                            <i class="bi bi-trash"></i> Delete
+                                        </a>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            {% else %}
+                <div class="alert alert-info">
+                    <i class="bi bi-info-circle me-2"></i> No past recordings found.
+                </div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        // Toggle audio players
+        const toggleButtons = document.querySelectorAll('.toggle-player');
+        toggleButtons.forEach(button => {
+            button.addEventListener('click', function() {
+                const recordingId = this.getAttribute('data-recording-id');
+                const player = document.getElementById('player-' + recordingId);
+                
+                if (player.style.display === 'none') {
+                    // Hide all other players first
+                    document.querySelectorAll('.audio-player').forEach(p => {
+                        p.style.display = 'none';
+                    });
+                    
+                    // Show this player
+                    player.style.display = 'block';
+                    
+                    // Start playing
+                    const audio = player.querySelector('audio');
+                    audio.load(); // Force reload to avoid issues
+                    audio.play().catch(e => console.log('Play error:', e));
+                    
+                    // Change button text
+                    this.innerHTML = '<i class="bi bi-stop"></i> Stop';
+                } else {
+                    // Hide this player
+                    player.style.display = 'none';
+                    
+                    // Stop playing
+                    const audio = player.querySelector('audio');
+                    audio.pause();
+                    audio.currentTime = 0;
+                    
+                    // Change button text back
+                    this.innerHTML = '<i class="bi bi-play"></i> Play';
+                }
+            });
+        });
+    });
+</script>
+{% endblock %}

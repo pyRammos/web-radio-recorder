@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+
+{% block title %}{{ title }}{% endblock %}
+
+{% block content %}
+<div class="container">
+    <div class="card">
+        <div class="card-header">
+            <h2 class="section-header m-0">Restore from Backup</h2>
+        </div>
+        <div class="card-body">
+            {% if error %}
+            <div class="alert alert-danger">
+                {{ error }}
+            </div>
+            {% endif %}
+            
+            {% if success %}
+            <div class="alert alert-success">
+                {{ success }}
+            </div>
+            {% endif %}
+            
+            <form method="post" enctype="multipart/form-data">
+                <div class="mb-3">
+                    <label for="backup_file" class="form-label">Select Backup ZIP File</label>
+                    <input type="file" class="form-control" id="backup_file" name="backup_file" accept=".zip" required>
+                    <div class="form-text">
+                        Upload a backup ZIP file created by the backup function.
+                    </div>
+                </div>
+                
+                <div class="alert alert-warning">
+                    <i class="bi bi-exclamation-triangle me-2"></i>
+                    <strong>Warning:</strong> This will overwrite your current configuration. Make sure you have a backup of your current setup before proceeding.
+                </div>
+                
+                <div class="d-flex justify-content-between">
+                    <a href="{{ url_for('stats') }}" class="btn btn-outline-secondary">
+                        <i class="bi bi-arrow-left"></i> Cancel
+                    </a>
+                    <button type="submit" class="btn btn-danger">
+                        <i class="bi bi-cloud-upload"></i> Restore Backup
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+{% endblock %}

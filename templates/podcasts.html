@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+
+{% block title %}{{ title }}{% endblock %}
+
+{% block content %}
+<style>
+    .podcast-image {
+        max-width: 100%;
+        height: auto;
+        max-height: 200px;
+        object-fit: contain;
+    }
+    .podcast-card {
+        height: 100%;
+    }
+    .card-img-top {
+        padding: 1rem;
+        height: 200px;
+        object-fit: contain;
+        background-color: #f8f9fa;
+    }
+</style>
+
+<div class="container">
+    <h1 class="mb-4">Available Podcasts</h1>
+    
+    {% if podcasts %}
+    <div class="row row-cols-1 row-cols-md-2 row-cols-lg-3 g-4">
+        {% for podcast in podcasts %}
+        <div class="col">
+            <div class="card podcast-card h-100">
+                {% if podcast.image %}
+                <img src="{{ url_for('podcast_image', podcast_uuid=podcast.uuid) }}" 
+                     class="card-img-top" alt="{{ podcast.title }}">
+                {% else %}
+                <div class="card-img-top d-flex align-items-center justify-content-center">
+                    <i class="bi bi-music-note-beamed" style="font-size: 5rem;"></i>
+                </div>
+                {% endif %}
+                <div class="card-body">
+                    <h5 class="card-title">{{ podcast.title }}</h5>
+                    <p class="card-text small text-muted">Station: {{ podcast.station_name }}</p>
+                    <p class="card-text">{{ podcast.description }}</p>
+                </div>
+                <div class="card-footer bg-white">
+                    <a href="{{ url_for('podcast_feed', podcast_uuid=podcast.uuid) }}" 
+                       class="btn btn-sm btn-outline-success me-2" 
+                       target="_blank">
+                        <i class="bi bi-rss"></i> RSS Feed
+                    </a>
+                    <button class="btn btn-sm btn-outline-info copy-button" 
+                            data-url="{{ url_for('podcast_feed', podcast_uuid=podcast.uuid, _external=True) }}">
+                        <i class="bi bi-clipboard"></i> Copy URL
+                    </button>
+                </div>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="alert alert-info">
+        <i class="bi bi-info-circle me-2"></i> No podcasts available. Create a recurring recording to generate a podcast feed.
+    </div>
+    {% endif %}
+</div>
+
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        // Add click handlers for copy buttons
+        document.querySelectorAll('.copy-button').forEach(function(button) {
+            button.addEventListener('click', function() {
+                const url = this.getAttribute('data-url');
+                navigator.clipboard.writeText(url).then(() => {
+                    // Show feedback
+                    const originalText = this.innerHTML;
+                    this.innerHTML = '<i class="bi bi-check"></i> Copied!';
+                    this.classList.remove('btn-outline-info');
+                    this.classList.add('btn-success');
+                    
+                    // Reset after 2 seconds
+                    setTimeout(() => {
+                        this.innerHTML = originalText;
+                        this.classList.remove('btn-success');
+                        this.classList.add('btn-outline-info');
+                    }, 2000);
+                });
+            });
+        });
+    });
+</script>
+{% endblock %}

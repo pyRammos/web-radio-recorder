@@ -1,0 +1,76 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+.venv/
+ENV/
+
+# Flask
+instance/
+.webassets-cache
+
+# Database
+*.db
+*.sqlite3
+radio_recorder.db
+
+# Recordings
+recordings/*.mp3
+recordings/*.mp4
+recordings/*.aac
+recordings/*.ogg
+recordings/*.wav
+recordings/*.flac
+
+# Allow recording folder but not its contents
+!recordings/
+!recordings/images/
+!recordings/.gitkeep
+
+# Keep sample images for documentation
+!recordings/images/sample_*.png
+!recordings/images/sample_*.jpg
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Environment variables
+.env
+.flaskenv
+
+# Logs
+logs/
+*.log

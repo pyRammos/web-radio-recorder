@@ -1,0 +1,18 @@
+[Unit]
+Description=Web Radio Recorder Service
+After=network.target
+
+[Service]
+Type=simple
+User=george
+WorkingDirectory=/home/george/projects/web-radio-recorder
+ExecStart=/home/george/projects/web-radio-recorder/startup.sh
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=webradiorecorder
+Environment="PATH=/home/george/projects/web-radio-recorder/.venv/bin:/usr/local/bin:/usr/bin:/bin"
+
+[Install]
+WantedBy=multi-user.target

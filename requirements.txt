@@ -1,0 +1,23 @@
+# Core dependencies
+flask==2.3.3
+werkzeug==2.3.7
+flask-login==0.6.2
+flask-sqlalchemy==3.1.1
+flask-migrate==3.1.0
+
+# Scheduling
+apscheduler==3.10.4
+
+# Audio processing
+ffmpeg-python==0.2.0
+pydub==0.25.1
+
+# HTTP requests
+requests==2.28.1
+
+# Environment variables
+python-dotenv==1.0.0
+
+# Production (optional)
+# gunicorn==21.2.0
+# psycopg2-binary==2.9.9  # Uncomment if using PostgreSQL

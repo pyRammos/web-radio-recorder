@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd" xmlns:content="http://purl.org/rss/1.0/modules/content/">
+  <channel>
+    <title>{{ podcast.title }}</title>
+    <link>{{ base_url }}</link>
+    <language>{{ podcast.language|default('en-us') }}</language>
+    <itunes:author>{{ podcast.author|default('Web Radio Recorder') }}</itunes:author>
+    <description>{{ podcast.description|default('Recorded radio shows') }}</description>
+    <itunes:summary>{{ podcast.description|default('Recorded radio shows') }}</itunes:summary>
+    <itunes:owner>
+      <itunes:name>{{ podcast.author|default('Web Radio Recorder') }}</itunes:name>
+      <itunes:email>{{ podcast.email|default('') }}</itunes:email>
+    </itunes:owner>
+    {% if podcast.image %}
+    <itunes:image href="{{ base_url }}/podcast/image/{{ podcast.uuid }}"/>
+    <image>
+      <url>{{ base_url }}/podcast/image/{{ podcast.uuid }}</url>
+      <title>{{ podcast.title }}</title>
+      <link>{{ base_url }}</link>
+    </image>
+    {% endif %}
+    <itunes:explicit>{{ podcast.explicit|default('no') }}</itunes:explicit>
+    <itunes:category text="{{ podcast.category|default('Music') }}"/>
+    
+    {% for episode in episodes %}
+    <item>
+      <title>{{ episode.station_name|default('Recording') }} - 
+        {% if episode.actual_start_time %}
+          {% if episode.actual_start_time is string and 'T' in episode.actual_start_time %}
+            {{ episode.actual_start_time.split('T')[0] }}
+          {% else %}
+            {{ episode.actual_start_time }}
+          {% endif %}
+        {% else %}
+          Unknown Date
+        {% endif %}
+      </title>
+      <itunes:title>{{ episode.station_name|default('Recording') }}</itunes:title>
+      <description>Recording from {{ episode.station_name|default('radio station') }}</description>
+      <enclosure url="{{ base_url }}/recording_file/{{ episode.id }}" 
+                length="{{ episode.file_size|default(0) }}" 
+                type="audio/mpeg"/>
+      <guid isPermaLink="false">{{ base_url }}/recording_file/{{ episode.id }}</guid>
+      <pubDate>
+        {% if episode.actual_start_time %}
+          {{ episode.actual_start_time }}
+        {% elif episode.start_time %}
+          {{ episode.start_time }}
+        {% endif %}
+      </pubDate>
+      <itunes:duration>{{ (episode.duration_seconds / 60)|round|int }}:{{ (episode.duration_seconds % 60)|int }}</itunes:duration>
+    </item>
+    {% endfor %}
+  </channel>
+</rss>
