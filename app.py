@@ -4,6 +4,16 @@ from dotenv import load_dotenv
 
 # Load environment variables from .env file
 load_dotenv()
+
+# Add the missing imports
+from flask import Flask, render_template, request, redirect, url_for, send_file, Response
+from datetime import datetime, timedelta
+import uuid
+import subprocess
+import logging
+from logging.handlers import RotatingFileHandler
+
+# Continue with existing imports
 import json
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.date import DateTrigger
@@ -20,8 +30,6 @@ import sqlalchemy
 import flask_sqlalchemy
 from functools import wraps
 from flask import redirect, url_for, flash
-import logging
-from logging.handlers import RotatingFileHandler
 
 # Fix SQLAlchemy compatibility issues if needed
 if not hasattr(sqlalchemy, '__all__'):  
