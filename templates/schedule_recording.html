@@ -129,6 +129,35 @@
                     </div>
                 </div>
                 
+                <!-- Add this to your schedule recording form -->
+                <div class="card mb-3" id="nextcloud-options">
+                    <div class="card-header">
+                        <h5>Nextcloud Integration</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="form-check mb-3">
+                            <input type="checkbox" class="form-check-input" id="save_to_nextcloud" name="save_to_nextcloud">
+                            <label class="form-check-label" for="save_to_nextcloud">
+                                Save recordings to Nextcloud
+                            </label>
+                        </div>
+                        
+                        <div id="nextcloud-folder-group" class="mb-3 d-none">
+                            <label for="nextcloud_folder" class="form-label">Nextcloud folder path</label>
+                            <input type="text" class="form-control" id="nextcloud_folder" name="nextcloud_folder" 
+                                   value="Recordings/{{ station.name }}">
+                            <small class="text-muted">Path where recordings will be stored in Nextcloud</small>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Add this to your schedule_recording.html template where podcast options are -->
+                <div id="retention-options" class="mb-3">
+                    <label for="max_recordings" class="form-label">Maximum recordings to keep</label>
+                    <input type="number" class="form-control" id="max_recordings" name="max_recordings" value="0" min="0" max="100">
+                    <small class="text-muted">Set to 0 to keep all recordings. Otherwise, older recordings will be automatically deleted when this limit is reached.</small>
+                </div>
+
                 <div class="mt-4 d-flex justify-content-between">
                     <a href="/" class="btn btn-outline-secondary">
                         <i class="bi bi-arrow-left"></i> Cancel
@@ -172,6 +201,34 @@ document.addEventListener('DOMContentLoaded', function() {
     
     // Initialize on page load
     togglePodcastDetails();
+    
+    // Show/hide Nextcloud folder field based on checkbox
+    document.getElementById('save_to_nextcloud').addEventListener('change', function() {
+        const folderGroup = document.getElementById('nextcloud-folder-group');
+        if (this.checked) {
+            folderGroup.classList.remove('d-none');
+        } else {
+            folderGroup.classList.add('d-none');
+        }
+    });
+
+    // Only show retention options for recurring recordings
+    document.getElementById('recurring_type').addEventListener('change', function() {
+        const retentionOptions = document.getElementById('retention-options');
+        if (this.value !== 'once') {
+            retentionOptions.style.display = 'block';
+        } else {
+            retentionOptions.style.display = 'none';
+        }
+    });
+
+    // Initialize on page load
+    const recurringType = document.getElementById('recurring_type');
+    const retentionOptions = document.getElementById('retention-options');
+    
+    if (recurringType.value === 'once') {
+        retentionOptions.style.display = 'none';
+    }
 });
 </script>
 {% endblock %}

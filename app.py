@@ -84,6 +84,16 @@ class User(UserMixin, db.Model):
     def check_password(self, password):
         return check_password_hash(self.password_hash, password)
 
+class UserSettings(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    nextcloud_url = db.Column(db.String(255))
+    nextcloud_username = db.Column(db.String(100))
+    nextcloud_password = db.Column(db.String(255))
+    
+    # Relationship with User model
+    user = db.relationship('User', backref=db.backref('settings', uselist=False))
+
 class Station(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(100), nullable=False)
@@ -117,6 +127,15 @@ class Recording(db.Model):
     podcast_explicit = db.Column(db.String(5))
     podcast_image = db.Column(db.String(255))
     
+    # Nextcloud integration
+    save_to_nextcloud = db.Column(db.Boolean, default=False)
+    nextcloud_folder = db.Column(db.String(255))
+    nextcloud_status = db.Column(db.String(20))  # success, failed, pending
+    nextcloud_error = db.Column(db.Text)
+
+    # Retention settings
+    max_recordings = db.Column(db.Integer, default=0)  # 0 means keep all recordings
+
     def to_dict(self):
         """Convert record to dictionary for scheduler compatibility"""
         result = {
@@ -186,12 +205,13 @@ def record_audio(recording_id, station_url, output_file, duration_seconds):
             base_directory = os.path.dirname(output_file)
             extension = os.path.splitext(output_file)[1]
             
-            # Format: StationName-YYYYMMDD
+            # Format: StationNameYYYYMMDD-DDD (where DDD is day of week abbreviation)
             current_time = datetime.now()
             formatted_date = current_time.strftime('%Y%m%d')
+            day_name = current_time.strftime('%a')  # 3-letter day abbreviation (Sun, Mon, etc.)
             
-            # Use station name and date for the filename
-            episode_title = f"{recording_db.station.name}-{formatted_date}"
+            # Use station name, date and day of week for the filename - no dash between station and date
+            episode_title = f"{recording_db.station.name}{formatted_date}-{day_name}"
             new_output_file = os.path.join(base_directory, f"{episode_title}{extension}")
             
             # Use the new filename
@@ -266,14 +286,40 @@ def record_audio(recording_id, station_url, output_file, duration_seconds):
                     # Add to the database
                     db.session.add(episode)
                     db.session.commit()
+                    
+                    # Clean up old episodes if there's a retention policy
+                    if recording_db.max_recordings > 0 and recording_db.podcast_uuid:
+                        clean_up_old_recordings(recording_db.podcast_uuid, recording_db.max_recordings)
                 else:
                     # For one-time recordings, update the existing entry
-                    recording_db.status = 'Completed'
-                    recording_db.actual_start_time = datetime.now()
-                    if os.path.exists(output_file):
-                        recording_db.file_size = os.path.getsize(output_file)
                     db.session.commit()
                     
+                if recording_db.save_to_nextcloud:
+                    # Get user settings
+                    user = User.query.filter_by(is_admin=True).first()  # Or however you want to determine user
+                    if user and user.settings:
+                        settings = user.settings
+                        
+                        # Create Nextcloud path
+                        filename = os.path.basename(output_file)
+                        nextcloud_folder = recording_db.nextcloud_folder or ''
+                        nextcloud_path = f"{nextcloud_folder}/{filename}"
+                        
+                        # Upload to Nextcloud
+                        success, message = upload_to_nextcloud(
+                            output_file,
+                            nextcloud_path,
+                            settings.nextcloud_url,
+                            settings.nextcloud_username,
+                            settings.nextcloud_password
+                        )
+                        
+                        # Update status
+                        recording_db.nextcloud_status = 'success' if success else 'failed'
+                        if not success:
+                            recording_db.nextcloud_error = message
+                            
+                        db.session.commit()
             else:
                 print(f"Recording failed with return code {process.returncode}")
                 error_msg = "Unknown error"
@@ -335,6 +381,36 @@ def schedule_recording_job(recording_id, station_url, output_file, start_time, d
             args=[recording_id, station_url, output_file, duration_seconds],
             name=f"Recording {recording_id}"
         )
+
+# Add this function with your other utility functions
+def clean_up_old_recordings(podcast_uuid, max_recordings):
+    """Delete old recordings based on retention policy"""
+    if max_recordings <= 0:
+        return  # Keep all recordings
+        
+    # Get all episodes for this podcast, sorted by date (newest first)
+    episodes = Recording.query.filter(
+        Recording.podcast_uuid == podcast_uuid,
+        Recording.status.in_(['Completed', 'completed']),
+        ~Recording.recurring.is_(None)  # Filter out the template
+    ).order_by(Recording.actual_start_time.desc()).all()
+    
+    # If we have more than the max, delete the oldest ones
+    if len(episodes) > max_recordings:
+        for episode in episodes[max_recordings:]:
+            # Delete the file if it exists
+            if episode.output_file and os.path.exists(episode.output_file):
+                try:
+                    os.remove(episode.output_file)
+                    app.logger.info(f"Deleted old recording file: {episode.output_file}")
+                except OSError as e:
+                    app.logger.error(f"Error deleting file {episode.output_file}: {e}")
+            
+            # Remove from database
+            db.session.delete(episode)
+            app.logger.info(f"Deleted old recording record: {episode.id}")
+            
+        db.session.commit()
 
 # Define all routes below
 
@@ -487,6 +563,22 @@ def schedule_recording():
                 # Store only the relative path from the recordings folder
                 relative_path = os.path.join('images', img_filename)
                 recording.podcast_image = relative_path
+        
+        # Add this in the schedule_recording route, before adding to the database
+        # Add retention setting
+        if recurring:
+            try:
+                max_recordings = int(request.form.get('max_recordings', 0))
+                recording.max_recordings = max(0, max_recordings)  # Ensure non-negative
+            except (ValueError, TypeError):
+                recording.max_recordings = 0  # Default to keeping all
+        
+        # Process Nextcloud options
+        save_to_nextcloud = request.form.get('save_to_nextcloud') == 'on'
+        recording.save_to_nextcloud = save_to_nextcloud
+        if save_to_nextcloud:
+            recording.nextcloud_folder = request.form.get('nextcloud_folder', '')
+            recording.nextcloud_status = 'pending'
         
         # Add to the schedule
         db.session.add(recording)
@@ -828,6 +920,126 @@ def admin_dashboard():
     }
     
     return render_template('admin_dashboard.html', title='Admin Dashboard', stats=stats)
+
+@app.route('/settings', methods=['GET', 'POST'])
+@login_required
+def settings():
+    # Get or create user settings
+    user_settings = UserSettings.query.filter_by(user_id=current_user.id).first()
+    if not user_settings:
+        user_settings = UserSettings(user_id=current_user.id)
+        db.session.add(user_settings)
+        db.session.commit()
+    
+    # Handle form submission
+    if request.method == 'POST':
+        # Password change section
+        if 'change_password' in request.form:
+            current_password = request.form.get('current_password')
+            new_password = request.form.get('new_password')
+            confirm_password = request.form.get('confirm_password')
+            
+            # Validate inputs
+            if not current_user.check_password(current_password):
+                flash('Current password is incorrect', 'danger')
+            elif new_password != confirm_password:
+                flash('New passwords do not match', 'danger')
+            elif len(new_password) < 8:
+                flash('Password must be at least 8 characters', 'danger')
+            else:
+                # Update password
+                current_user.set_password(new_password)
+                current_user.password_change_required = False
+                db.session.commit()
+                flash('Password successfully changed', 'success')
+        
+        # Nextcloud settings section
+        elif 'update_nextcloud' in request.form:
+            user_settings.nextcloud_url = request.form.get('nextcloud_url', '').rstrip('/')
+            user_settings.nextcloud_username = request.form.get('nextcloud_username', '')
+            
+            # Only update password if provided (not empty)
+            new_password = request.form.get('nextcloud_password', '')
+            if new_password:
+                user_settings.nextcloud_password = new_password
+                
+            db.session.commit()
+            flash('Nextcloud settings updated', 'success')
+            
+            # Test connection if requested
+            if 'test_connection' in request.form:
+                success, message = test_nextcloud_connection(
+                    user_settings.nextcloud_url,
+                    user_settings.nextcloud_username,
+                    user_settings.nextcloud_password
+                )
+                if success:
+                    flash(f'Nextcloud connection successful: {message}', 'success')
+                else:
+                    flash(f'Nextcloud connection failed: {message}', 'danger')
+    
+    return render_template('settings.html', title='User Settings', settings=user_settings)
+
+def test_nextcloud_connection(nextcloud_url, username, password):
+    """Test connection to Nextcloud server"""
+    try:
+        import requests
+        # Construct the WebDAV URL
+        webdav_url = f"{nextcloud_url}/remote.php/dav/files/{username}/"
+        
+        # Make a request to list root directory
+        response = requests.propfind(
+            webdav_url,
+            auth=(username, password),
+            headers={'Depth': '0'}
+        )
+        
+        if response.status_code == 207:  # Multi-status response is good
+            return True, "Connection successful"
+        else:
+            return False, f"Unexpected status code: {response.status_code}"
+    
+    except Exception as e:
+        return False, str(e)
+
+def upload_to_nextcloud(file_path, nextcloud_path, nextcloud_url, username, password):
+    """Upload a file to Nextcloud via WebDAV"""
+    try:
+        import requests
+        from pathlib import Path
+        
+        # Ensure the path starts with a slash
+        if not nextcloud_path.startswith('/'):
+            nextcloud_path = '/' + nextcloud_path
+        
+        # Construct the full URL
+        webdav_url = f"{nextcloud_url}/remote.php/dav/files/{username}{nextcloud_path}"
+        
+        # Create directory if it doesn't exist
+        dir_path = str(Path(nextcloud_path).parent)
+        if dir_path != '/':
+            dir_url = f"{nextcloud_url}/remote.php/dav/files/{username}{dir_path}"
+            requests.request(
+                'MKCOL', 
+                dir_url,
+                auth=(username, password)
+            )
+        
+        # Upload the file
+        with open(file_path, 'rb') as f:
+            response = requests.put(
+                webdav_url,
+                data=f,
+                auth=(username, password)
+            )
+        
+        if response.status_code in [200, 201, 204]:
+            return True, "File uploaded successfully"
+        else:
+            return False, f"Upload failed with status code: {response.status_code}"
+    
+    except Exception as e:
+        return False, str(e)
 
 # Initialize the application
 def init_app():
