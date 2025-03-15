@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+
+{% block title %}{{ title }}{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <h1>Admin Dashboard</h1>
+    
+    <div class="row mt-4">
+        <div class="col-md-6">
+            <div class="card mb-4">
+                <div class="card-header bg-primary text-white">
+                    <h4>System Statistics</h4>
+                </div>
+                <div class="card-body">
+                    <table class="table">
+                        <tbody>
+                            <tr>
+                                <td><strong>Radio Stations:</strong></td>
+                                <td>{{ stats.stations_count }}</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Total Recordings:</strong></td>
+                                <td>{{ stats.recordings_count }}</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Completed Recordings:</strong></td>
+                                <td>{{ stats.completed_recordings }}</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Failed Recordings:</strong></td>
+                                <td>{{ stats.failed_recordings }}</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Scheduled Jobs:</strong></td>
+                                <td>{{ stats.scheduled_jobs }}</td>
+                            </tr>
+                            <tr>
+                                <td><strong>User Accounts:</strong></td>
+                                <td>{{ stats.users_count }}</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+        
+        <div class="col-md-6">
+            <div class="card mb-4">
+                <div class="card-header bg-success text-white">
+                    <h4>Admin Actions</h4>
+                </div>
+                <div class="card-body">
+                    <div class="list-group">
+                        <a href="{{ url_for('index') }}" class="list-group-item list-group-item-action">
+                            <i class="bi bi-house-door"></i> Home
+                        </a>
+                        <a href="{{ url_for('recordings') }}" class="list-group-item list-group-item-action">
+                            <i class="bi bi-music-note-list"></i> Manage Recordings
+                        </a>
+                        <a href="#" class="list-group-item list-group-item-action" onclick="restartScheduler(); return false;">
+                            <i class="bi bi-arrow-clockwise"></i> Restart Scheduler
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="row">
+        <div class="col-12">
+            <div class="card mb-4">
+                <div class="card-header bg-info text-white">
+                    <h4>System Health</h4>
+                </div>
+                <div class="card-body">
+                    <div id="systemHealth" class="alert alert-info">
+                        <p>System is running normally.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="row">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header bg-secondary text-white">
+                    <h4>Scheduler Jobs</h4>
+                </div>
+                <div class="card-body">
+                    <div id="schedulerJobs">
+                        <p>Active jobs are shown on the Recordings page.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+// Function to restart the scheduler (placeholder)
+function restartScheduler() {
+    if (confirm('Are you sure you want to restart the scheduler? This may interrupt recording jobs.')) {
+        alert('Scheduler restart functionality would go here.');
+    }
+}
+</script>
+{% endblock %}

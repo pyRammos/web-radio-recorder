@@ -784,6 +784,51 @@ def change_password():
     return render_template('change_password.html', title='Change Password', 
                           force_change=force_change, next=next_url)
 
+@app.route('/health')
+def health_check():
+    """Health check endpoint for monitoring."""
+    status = {
+        'status': 'ok',
+        'timestamp': datetime.now().isoformat(),
+        'scheduler_running': scheduler.running,
+        'jobs_count': len(scheduler.get_jobs()),
+        'version': '1.0.0'
+    }
+    return status
+
+@app.errorhandler(500)
+def server_error(e):
+    app.logger.error(f"Server error: {str(e)}")
+    return render_template('error.html', 
+                          error="Internal Server Error", 
+                          message="Something went wrong. Please try again or contact the administrator."), 500
+
+@app.errorhandler(404)
+def not_found(e):
+    return render_template('error.html', 
+                          error="Page Not Found", 
+                          message="The requested resource could not be found."), 404
+
+@app.route('/admin')
+@login_required
+def admin_dashboard():
+    # Check if user is admin
+    if not current_user.is_admin:
+        flash('Admin privileges required.', 'danger')
+        return redirect(url_for('index'))
+    
+    # Get statistics
+    stats = {
+        'stations_count': Station.query.count(),
+        'recordings_count': Recording.query.count(),
+        'completed_recordings': Recording.query.filter(Recording.status.in_(['Completed', 'completed'])).count(),
+        'failed_recordings': Recording.query.filter(Recording.status == 'Failed').count(),
+        'scheduled_jobs': len(scheduler.get_jobs()),
+        'users_count': User.query.count(),
+    }
+    
+    return render_template('admin_dashboard.html', title='Admin Dashboard', stats=stats)
+
 # Initialize the application
 def init_app():
     # Make sure database tables exist

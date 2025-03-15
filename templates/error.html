@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+
+{% block title %}{{ error }}{% endblock %}
+
+{% block content %}
+<div class="container mt-5">
+    <div class="row justify-content-center">
+        <div class="col-md-8">
+            <div class="card">
+                <div class="card-header bg-danger text-white">
+                    <h2>{{ error }}</h2>
+                </div>
+                <div class="card-body">
+                    <p>{{ message }}</p>
+                    <a href="{{ url_for('index') }}" class="btn btn-primary">Return to Home</a>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
