@@ -1,0 +1,17 @@
+.git
+.gitignore
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+.env
+.env.*
+venv
+.venv
+env/
+.flask_session/
+recordings/
+logs/
+instance/
+*.db

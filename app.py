@@ -35,18 +35,28 @@ from flask import redirect, url_for, flash
 if not hasattr(sqlalchemy, '__all__'):  
     sqlalchemy.__all__ = []
 
+# Get configurable paths from environment
+RECORDINGS_FOLDER = os.environ.get('RECORDINGS_FOLDER', os.path.join(os.path.dirname(__file__), 'recordings'))
+LOGS_PATH = os.environ.get('LOGS_PATH', os.path.join(os.path.dirname(__file__), 'logs'))
+INSTANCE_PATH = os.environ.get('INSTANCE_PATH', None)  # Flask will use default if None
+
+# Set instance path if provided
+if INSTANCE_PATH:
+    app = Flask(__name__, instance_path=INSTANCE_PATH)
+else:
+    app = Flask(__name__)
+
 # Create the Flask application
-app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY')
 if not app.secret_key:
     raise RuntimeError('SECRET_KEY environment variable is not set. Refusing to start in production without a secure key.')
-app.config['RECORDINGS_FOLDER'] = os.path.join(os.path.dirname(__file__), 'recordings')
+app.config['RECORDINGS_FOLDER'] = RECORDINGS_FOLDER
 app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///radio_recorder.db')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 if not os.environ.get('FLASK_DEBUG', 'False').lower() == 'true':
     # Set up logging for production
-    log_dir = os.path.join(os.path.dirname(__file__), 'logs')
+    log_dir = LOGS_PATH
     os.makedirs(log_dir, exist_ok=True)
     
     file_handler = RotatingFileHandler(
@@ -66,9 +76,14 @@ if not os.environ.get('FLASK_DEBUG', 'False').lower() == 'true':
 # Initialize database
 db = SQLAlchemy(app)
 
-# Initialize the scheduler - we'll start it later
-scheduler = BackgroundScheduler()
-scheduler.add_jobstore(MemoryJobStore(), 'default')
+# Update your scheduler to use SQLAlchemy for job storage
+from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
+
+# Initialize the scheduler with persistent storage
+jobstores = {
+    'default': SQLAlchemyJobStore(url=app.config['SQLALCHEMY_DATABASE_URI'])
+}
+scheduler = BackgroundScheduler(jobstores=jobstores)
 
 # Define database models
 class User(UserMixin, db.Model):
@@ -199,153 +214,139 @@ def record_audio(recording_id, station_url, output_file, duration_seconds):
             print(f"Recording {recording_id} not found.")
             return
         
-        # For recurring recordings, create a unique output file based on current date/time
-        if recording_db.recurring:
-            # Get base directory and file information
-            base_directory = os.path.dirname(output_file)
-            extension = os.path.splitext(output_file)[1]
-            
-            # Format: StationNameYYYYMMDD-DDD (where DDD is day of week abbreviation)
-            current_time = datetime.now()
-            formatted_date = current_time.strftime('%Y%m%d')
-            day_name = current_time.strftime('%a')  # 3-letter day abbreviation (Sun, Mon, etc.)
-            
-            # Use station name, date and day of week for the filename - no dash between station and date
-            episode_title = f"{recording_db.station.name}{formatted_date}-{day_name}"
-            new_output_file = os.path.join(base_directory, f"{episode_title}{extension}")
-            
-            # Use the new filename
-            output_file = new_output_file
+        # Create a unique output file based on current date/time with consistent format
+        # Get base directory and file information
+        base_directory = os.path.dirname(output_file)
+        extension = os.path.splitext(output_file)[1]
+        
+        # Format: [StationName][YYYYMMDD-DDD].mp3
+        current_time = datetime.now()
+        formatted_date = current_time.strftime('%Y%m%d')
+        day_name = current_time.strftime('%a')  # 3-letter day abbreviation (Sun, Mon, etc.)
+        
+        # Use station name, date and day of week for the new format
+        episode_title = f"{recording_db.station.name}{formatted_date}-{day_name}"
+        new_output_file = os.path.join(base_directory, f"{episode_title}{extension}")
+        
+        # Use the new filename
+        output_file = new_output_file
         
         # Create the output directory if it doesn't exist
         os.makedirs(os.path.dirname(os.path.abspath(output_file)), exist_ok=True)
         
+        # Update the recording status to 'in_progress'
+        recording_db.status = 'in_progress'
+        recording_db.actual_start_time = datetime.now()
+        recording_db.output_file = output_file  # Save the actual output file path
+        db.session.commit()
+        
+        # Log start of recording
+        app.logger.info(f"Starting recording: {recording_id}")
+        app.logger.info(f"  - Output file: {output_file}")
+        app.logger.info(f"  - Duration: {duration_seconds} seconds")
+        app.logger.info(f"  - URL: {station_url}")
+        
         # Create the ffmpeg command to record the stream
-        cmd = [
-            'ffmpeg',
-            '-y',  # Overwrite output file if it exists
-            '-i', station_url,
-            '-t', str(duration_seconds),
-            '-c', 'copy',
-            output_file
-        ]
+        max_retries = 3
+        retry_count = 0
+        success = False
         
-        print(f"Starting recording: {' '.join(cmd)}")
-        start_time = time.time()
-        
-        try:
-            # Start recording - don't use text mode to avoid encoding issues
-            process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-            )
-            
-            stdout, stderr = process.communicate()
-            
-            # Check if the recording completed successfully
-            if process.returncode == 0:
-                print(f"Recording completed: {output_file}")
+        while retry_count < max_retries and not success:
+            try:
+                # Construct ffmpeg command
+                command = [
+                    'ffmpeg',
+                    '-y',  # Overwrite output file if it exists
+                    '-i', station_url,
+                    '-t', str(duration_seconds),
+                    '-c:a', 'copy',  # Copy audio stream without re-encoding if possible
+                    '-v', 'warning',  # Only show warnings and errors
+                    output_file
+                ]
                 
-                # For recurring recordings, create a completed episode
-                if recording_db.recurring:
-                    # Create a new recording entry for this completed episode
-                    episode_id = str(uuid.uuid4())
-                    
-                    # Make sure file exists before getting its size
-                    file_size = 0
-                    if os.path.exists(output_file):
-                        file_size = os.path.getsize(output_file)
-                    
-                    episode = Recording(
-                        id=episode_id,
-                        station_id=recording_db.station_id,
-                        start_time=datetime.now(),
-                        actual_start_time=datetime.now(),
-                        duration_minutes=recording_db.duration_minutes,
-                        duration_seconds=recording_db.duration_seconds,
-                        output_file=output_file,
-                        status='Completed',
-                        created_at=datetime.now(),
-                        file_size=file_size
-                    )
-                    
-                    # Copy podcast information
-                    if recording_db.is_podcast:
-                        episode.is_podcast = True
-                        episode.podcast_uuid = recording_db.podcast_uuid
-                        episode.podcast_title = recording_db.podcast_title
-                        episode.podcast_description = recording_db.podcast_description
-                        episode.podcast_language = recording_db.podcast_language
-                        episode.podcast_author = recording_db.podcast_author
-                        episode.podcast_email = recording_db.podcast_email
-                        episode.podcast_category = recording_db.podcast_category
-                        episode.podcast_explicit = recording_db.podcast_explicit
-                        episode.podcast_image = recording_db.podcast_image
-                    
-                    # Add to the database
-                    db.session.add(episode)
+                # Start the process and capture output
+                app.logger.info(f"Running command: {' '.join(command)}")
+                process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                
+                # Wait for the process to complete
+                stdout, stderr = process.communicate()
+                
+                # Check if the recording was successful
+                if process.returncode == 0:
+                    # Success - update recording status
+                    recording_db.status = 'completed'
+                    recording_db.end_time = datetime.now()
                     db.session.commit()
                     
-                    # Clean up old episodes if there's a retention policy
+                    app.logger.info(f"Recording completed successfully: {recording_id}")
+                    
+                    # If this is a recurring job with Nextcloud settings, try to upload
+                    if recording_db.recurring and recording_db.nextcloud_enabled:
+                        app.logger.info(f"Attempting Nextcloud upload for recording: {recording_id}")
+                        
+                        # Get the user for their Nextcloud settings
+                        creator = User.query.get(recording_db.user_id) if recording_db.user_id else None
+                        
+                        if creator and creator.nextcloud_url and creator.nextcloud_username and creator.nextcloud_password:
+                            # Determine remote path
+                            remote_path = recording_db.nextcloud_folder or '/Recordings/'
+                            if not remote_path.endswith('/'):
+                                remote_path += '/'
+                            remote_path += os.path.basename(output_file)
+                            
+                            # Attempt upload
+                            success, message = upload_to_nextcloud(
+                                output_file,
+                                remote_path,
+                                creator.nextcloud_url,
+                                creator.nextcloud_username,
+                                creator.nextcloud_password
+                            )
+                            
+                            if success:
+                                app.logger.info(f"Nextcloud upload successful: {message}")
+                                recording_db.nextcloud_status = 'Uploaded'
+                                recording_db.nextcloud_path = remote_path
+                            else:
+                                app.logger.error(f"Nextcloud upload failed: {message}")
+                                recording_db.nextcloud_status = f'Failed: {message}'
+                            
+                            db.session.commit()
+                    
+                    # Run retention policy check if needed
                     if recording_db.max_recordings > 0 and recording_db.podcast_uuid:
                         clean_up_old_recordings(recording_db.podcast_uuid, recording_db.max_recordings)
-                else:
-                    # For one-time recordings, update the existing entry
-                    db.session.commit()
                     
-                if recording_db.save_to_nextcloud:
-                    # Get user settings
-                    user = User.query.filter_by(is_admin=True).first()  # Or however you want to determine user
-                    if user and user.settings:
-                        settings = user.settings
-                        
-                        # Create Nextcloud path
-                        filename = os.path.basename(output_file)
-                        nextcloud_folder = recording_db.nextcloud_folder or ''
-                        nextcloud_path = f"{nextcloud_folder}/{filename}"
-                        
-                        # Upload to Nextcloud
-                        success, message = upload_to_nextcloud(
-                            output_file,
-                            nextcloud_path,
-                            settings.nextcloud_url,
-                            settings.nextcloud_username,
-                            settings.nextcloud_password
-                        )
-                        
-                        # Update status
-                        recording_db.nextcloud_status = 'success' if success else 'failed'
-                        if not success:
-                            recording_db.nextcloud_error = message
-                            
+                    success = True
+                else:
+                    # Failure - log errors and retry
+                    error_msg = stderr.decode('utf-8', errors='replace')
+                    app.logger.error(f"Recording failed: {error_msg}")
+                    retry_count += 1
+                    
+                    if retry_count < max_retries:
+                        app.logger.info(f"Retrying recording ({retry_count}/{max_retries})...")
+                        time.sleep(5)  # Wait 5 seconds before retrying
+                    else:
+                        # Max retries reached, update status to failed
+                        recording_db.status = 'failed'
+                        recording_db.end_time = datetime.now()
+                        recording_db.error_message = error_msg
                         db.session.commit()
-            else:
-                print(f"Recording failed with return code {process.returncode}")
-                error_msg = "Unknown error"
-                
-                # Try to decode error message, but handle encoding issues
-                if stderr:
-                    try:
-                        # Try to decode with errors='replace' to handle invalid bytes
-                        error_msg = stderr.decode('utf-8', errors='replace')[:200]
-                    except Exception as e:
-                        error_msg = f"Error decoding message: {str(e)}"
-                
-                # Update the status of the recording to failed
-                if not recording_db.recurring:
-                    recording_db.status = 'Failed'
-                    recording_db.error = error_msg
-                    db.session.commit()
-        
-        except Exception as e:
-            print(f"Error during recording: {e}")
+                        
+                        app.logger.error(f"Max retries reached, recording failed: {recording_id}")
             
-            # Update the status of the recording to failed
-            if not recording_db.recurring:
-                recording_db.status = 'Failed'
-                recording_db.error = str(e)
-                db.session.commit()
+            except Exception as e:
+                # Handle unexpected errors
+                app.logger.exception(f"Error recording audio: {str(e)}")
+                retry_count += 1
+                
+                if retry_count >= max_retries:
+                    # Max retries reached
+                    recording_db.status = 'failed'
+                    recording_db.end_time = datetime.now()
+                    recording_db.error_message = str(e)
+                    db.session.commit()
 
 def schedule_recording_job(recording_id, station_url, output_file, start_time, duration_seconds, recurring=None):
     """Schedule a recording job using the APScheduler."""
@@ -411,6 +412,20 @@ def clean_up_old_recordings(podcast_uuid, max_recordings):
             app.logger.info(f"Deleted old recording record: {episode.id}")
             
         db.session.commit()
+
+# Add this as a custom template filter near the top of your app.py file
+@app.template_filter('format_datetime')
+def format_datetime(value, format='%a %d/%b/%Y at %H:%M'):
+    """Format a datetime to a pretty string with day and date."""
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value)
+        except (ValueError, TypeError):
+            return value
+    
+    if isinstance(value, datetime):
+        return value.strftime(format)
+    return value
 
 # Define all routes below
 
@@ -488,7 +503,7 @@ def schedule_recording():
         
         # Create a unique ID and filename for this recording
         recording_id = str(uuid.uuid4())
-        filename = f"{station.name}_{start_datetime.strftime('%Y%m%d_%H%M')}.mp3"
+        filename = f"{station.name}.mp3"  # We'll let record_audio handle the full name formatting
         output_path = os.path.join(app.config['RECORDINGS_FOLDER'], filename)
         
         # Set up cron expression based on recurring type
@@ -600,11 +615,12 @@ def schedule_recording():
         return f"Invalid date or time format: {e}", 400
 
 @app.route('/recordings')
+@login_required
 @password_change_required
 def recordings():
     now = datetime.now()
     
-    # Get upcoming recordings from database
+    # Get upcoming recordings from scheduler
     upcoming_recordings = []
     for recording in Recording.query.filter(Recording.status == 'scheduled').all():
         rec_dict = recording.to_dict()
@@ -617,23 +633,33 @@ def recordings():
     # Sort upcoming recordings by next run time or start time
     upcoming_recordings.sort(key=lambda x: x.get('next_run_time', x.get('start_time', datetime.max)))
     
-    # Get past recordings from database
+    # Get past recordings - look for ANY status other than 'scheduled'
     past_recordings = []
-    for recording in Recording.query.filter(Recording.status != 'scheduled').all():
+    
+    # Query with explicit status conditions for better visibility
+    past_query = Recording.query.filter(
+        Recording.status.in_(['completed', 'Completed', 'in_progress', 'failed', 'Failed'])
+    ).all()
+    
+    app.logger.info(f"Found {len(past_query)} past recordings")
+    
+    for recording in past_query:
         rec_dict = recording.to_dict()
         # Check if a completed recording is missing its file
         if recording.status in ['Completed', 'completed']:
-            if not os.path.exists(recording.output_file):
+            if not recording.output_file or not os.path.exists(recording.output_file):
                 rec_dict['status'] = 'Missing'
+                app.logger.warning(f"Recording {recording.id} file missing: {recording.output_file}")
         past_recordings.append(rec_dict)
     
     # Sort past recordings by start time (newest first)
-    past_recordings.sort(key=lambda x: x.get('start_time', datetime.min), reverse=True)
+    past_recordings.sort(key=lambda x: x.get('actual_start_time', x.get('start_time', datetime.min)), reverse=True)
     
     return render_template('recordings.html', 
                           title='Recordings',
                           upcoming_recordings=upcoming_recordings,
-                          past_recordings=past_recordings)
+                          past_recordings=past_recordings,
+                          now=now)
 
 @app.route('/delete_recording/<recording_id>')
 @login_required
@@ -879,14 +905,27 @@ def change_password():
 @app.route('/health')
 def health_check():
     """Health check endpoint for monitoring."""
-    status = {
-        'status': 'ok',
-        'timestamp': datetime.now().isoformat(),
-        'scheduler_running': scheduler.running,
-        'jobs_count': len(scheduler.get_jobs()),
-        'version': '1.0.0'
-    }
-    return status
+    try:
+        # Test database connectivity
+        db.session.execute('SELECT 1').scalar()
+        scheduler_status = scheduler.running
+        
+        status = {
+            'status': 'ok',
+            'timestamp': datetime.now().isoformat(),
+            'scheduler_running': scheduler_status,
+            'jobs_count': len(scheduler.get_jobs()),
+            'database': 'connected',
+            'version': '1.0.0'
+        }
+        return status, 200
+    except Exception as e:
+        error_status = {
+            'status': 'error',
+            'timestamp': datetime.now().isoformat(),
+            'error': str(e)
+        }
+        return error_status, 500
 
 @app.errorhandler(500)
 def server_error(e):
@@ -1043,14 +1082,17 @@ def upload_to_nextcloud(file_path, nextcloud_path, nextcloud_url, username, pass
 
 # Initialize the application
 def init_app():
-    # Make sure database tables exist
+    import pytz
+    from apscheduler.events import EVENT_ALL
+    
     with app.app_context():
+        # Create database tables
         db.create_all()
         
         # Add a default admin user if there are no users
         if not User.query.first():
-            admin = User(username='admin', is_admin=True, password_change_required=True)  # Add this flag
-            admin.set_password('password123')  # Default password, should be changed
+            admin = User(username='admin', is_admin=True, password_change_required=True)
+            admin.set_password('password123')
             db.session.add(admin)
             
             # Add some default stations
@@ -1069,44 +1111,6 @@ def init_app():
             print("Password: password123")
             print("IMPORTANT: Change this password immediately!")
         
-        # Initialize any pending recordings
-        recordings = Recording.query.filter_by(status='scheduled').all()
-        now = datetime.now()
-        
-        for recording in recordings:
-            station = Station.query.get(recording.station_id)
-            if not station:
-                continue
-                
-            if recording.recurring:
-                # Schedule recurring job
-                schedule_recording_job(
-                    recording.id,
-                    station.url,
-                    recording.output_file,
-                    recording.start_time,
-                    recording.duration_seconds,
-                    recording.recurring
-                )
-            elif recording.start_time > now:
-                # Schedule one-time job that hasn't passed yet
-                schedule_recording_job(
-                    recording.id,
-                    station.url,
-                    recording.output_file,
-                    recording.start_time,
-                    recording.duration_seconds
-                )
-
-    # Ensure recordings directory exists
-    os.makedirs(app.config['RECORDINGS_FOLDER'], exist_ok=True)
-    
-    # Start the scheduler
-    if not scheduler.running:
-        scheduler.start()
-
-    # In your init_app function, after db.create_all(), add this code to handle existing users
-    with app.app_context():
         # Update schema with new column (if using SQLite this should work)
         inspector = db.inspect(db.engine)
         if 'password_change_required' not in [c['name'] for c in inspector.get_columns('user')]:
@@ -1117,18 +1121,164 @@ def init_app():
         for user in User.query.all():
             if check_password_hash(user.password_hash, 'password123'):
                 user.password_change_required = True
-            db.session.commit()
-
-    # At the end of your init_app function
-
+        db.session.commit()
+        
+        # Ensure recordings directory exists
+        os.makedirs(app.config['RECORDINGS_FOLDER'], exist_ok=True)
+        
+        # Configure and start scheduler - ONLY ONCE
+        if not scheduler.running:
+            # Configure scheduler
+            scheduler.configure(timezone=pytz.timezone('UTC'))
+            scheduler.add_listener(lambda event: app.logger.info(f"Job event: {event.code}"), EVENT_ALL)
+            
+            # Initialize any pending recordings
+            recordings = Recording.query.filter_by(status='scheduled').all()
+            now = datetime.now()
+            
+            for recording in recordings:
+                station = Station.query.get(recording.station_id)
+                if not station:
+                    continue
+                    
+                if recording.recurring:
+                    # Schedule recurring job
+                    schedule_recording_job(
+                        recording.id,
+                        station.url,
+                        recording.output_file,
+                        recording.start_time,
+                        recording.duration_seconds,
+                        recording.recurring
+                    )
+                elif recording.start_time > now:
+                    # Schedule one-time job that hasn't passed yet
+                    schedule_recording_job(
+                        recording.id,
+                        station.url,
+                        recording.output_file,
+                        recording.start_time,
+                        recording.duration_seconds
+                    )
+            
+            # Start the scheduler
+            scheduler.start()
+    
+    # Setup graceful shutdown - ONLY ONCE
     def graceful_shutdown():
         """Handle graceful shutdown of scheduler."""
         print("Shutting down scheduler...")
-        scheduler.shutdown()
+        if scheduler.running:
+            scheduler.shutdown()
 
     # Register the cleanup function
     import atexit
     atexit.register(graceful_shutdown)
+
+@app.route('/debug/scheduler')
+def debug_scheduler():
+    """Debug info about scheduler"""
+    jobs = []
+    for job in scheduler.get_jobs():
+        trigger_info = {}
+        if hasattr(job.trigger, 'run_date'):
+            trigger_info['run_date'] = job.trigger.run_date.isoformat() if job.trigger.run_date else None
+        elif hasattr(job.trigger, 'fields'):
+            trigger_info['fields'] = {f.name: str(f) for f in job.trigger.fields}
+        
+        jobs.append({
+            'id': job.id,
+            'name': job.name,
+            'next_run_time': job.next_run_time.isoformat() if job.next_run_time else None,
+            'trigger': str(job.trigger),
+            'trigger_info': trigger_info,
+            'func': job.func.__name__,
+            'args': str(job.args),
+            'kwargs': str(job.kwargs),
+            'misfire_grace_time': job.misfire_grace_time,
+            'max_instances': job.max_instances
+        })
+    
+    # Get environment info
+    import platform
+    import pytz
+    
+    env_info = {
+        'os': platform.platform(),
+        'python': platform.python_version(),
+        'timezone': str(pytz.timezone('UTC')),
+        'current_time': datetime.now().isoformat(),
+        'utc_time': datetime.utcnow().isoformat()
+    }
+    
+    # Add scheduler state
+    scheduler_state = {
+        'running': scheduler.running,
+        'jobs_count': len(scheduler.get_jobs()),
+        'jobstores': list(scheduler._jobstores.keys()),
+        'timezone': str(scheduler.timezone) if hasattr(scheduler, 'timezone') else None
+    }
+    
+    # Add Docker info if in Docker container
+    docker_info = {'in_container': os.path.exists('/.dockerenv')}
+    if docker_info['in_container']:
+        try:
+            with open('/etc/timezone', 'r') as f:
+                docker_info['container_timezone'] = f.read().strip()
+        except:
+            docker_info['container_timezone'] = 'Could not read /etc/timezone'
+    
+    response = {
+        'scheduler_state': scheduler_state,
+        'jobs': jobs,
+        'environment': env_info,
+        'docker': docker_info
+    }
+    
+    return response
+
+@app.route('/debug/find_orphaned_files')
+@login_required
+def find_orphaned_files():
+    """Find recording files that exist but aren't in the database"""
+    recordings_folder = app.config['RECORDINGS_FOLDER']
+    
+    # Get all recording files
+    recording_files = []
+    for root, dirs, files in os.walk(recordings_folder):
+        for file in files:
+            if file.endswith('.mp3'):
+                recording_files.append(os.path.join(root, file))
+    
+    # Get all recordings in the database
+    db_recordings = Recording.query.all()
+    db_files = [r.output_file for r in db_recordings if r.output_file]
+    
+    # Find files not in the database
+    orphaned_files = []
+    for file_path in recording_files:
+        if file_path not in db_files:
+            # Get file info
+            file_size = os.path.getsize(file_path)
+            file_mtime = datetime.fromtimestamp(os.path.getmtime(file_path))
+            
+            orphaned_files.append({
+                'path': file_path,
+                'filename': os.path.basename(file_path),
+                'size': file_size,
+                'modified': file_mtime,
+                'age_days': (datetime.now() - file_mtime).days
+            })
+    
+    # Sort by modification time (newest first)
+    orphaned_files.sort(key=lambda x: x['modified'], reverse=True)
+    
+    return {
+        'orphaned_files_count': len(orphaned_files),
+        'orphaned_files': orphaned_files,
+        'total_files_count': len(recording_files),
+        'database_files_count': len(db_files)
+    }
 
 if __name__ == '__main__':
     init_app()

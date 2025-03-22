@@ -1,0 +1,22 @@
+version: '3'
+
+services:
+  web-radio-recorder:
+    image: teleram/web-radio-recorder:latest
+    container_name: web-radio-recorder
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./data/recordings:/data/recordings
+      - ./data/instance:/data/instance
+      - ./data/logs:/data/logs
+    environment:
+      - SECRET_KEY=your-secret-key-here
+      - FLASK_DEBUG=false
+      - RECORDINGS_FOLDER=/data/recordings
+      - INSTANCE_PATH=/data/instance
+      - LOGS_PATH=/data/logs
+      - DATABASE_URL=sqlite:////data/instance/radio_recorcuder.db
+      - PORT=5000
+      - TZ=Europe/London
+    restart: unless-stopped

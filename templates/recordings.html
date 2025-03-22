@@ -6,6 +6,13 @@
 <div class="container">
     <h1>Recordings</h1>
     
+    <div class="mb-4">
+      <a href="/debug/scheduler" target="_blank" class="btn btn-outline-secondary btn-sm">
+        <i class="bi bi-bug"></i> Debug Scheduler Status
+      </a>
+      <small class="text-muted ms-2">Use this to get detailed information about the scheduler state.</small>
+    </div>
+    
     <!-- Navigation tabs -->
     <ul class="nav nav-tabs mb-4" id="recordingsTabs" role="tablist">
         <li class="nav-item" role="presentation">
@@ -42,11 +49,11 @@
                                 <td>{{ recording.station_name }}</td>
                                 <td>
                                     {% if recording.next_run_time %}
-                                        {{ recording.next_run_time.strftime('%Y-%m-%d %H:%M') }}
-                                    {% elif recording.start_time %}
-                                        {{ recording.start_time.strftime('%Y-%m-%d %H:%M') if recording.start_time is not string else recording.start_time }}
+                                        {{ recording.next_run_time|format_datetime }}
+                                        <span class="d-block relative-time" data-time="{{ recording.next_run_time.isoformat() if recording.next_run_time }}"></span>
                                     {% else %}
-                                        Unknown
+                                        {{ recording.start_time|format_datetime if recording.start_time }}
+                                        <span class="d-block relative-time" data-time="{{ recording.start_time.isoformat() if recording.start_time }}"></span>
                                     {% endif %}
                                     
                                     {% if recording.recurring %}
@@ -98,15 +105,7 @@
                             {% for recording in past_recordings %}
                             <tr>
                                 <td>{{ recording.station_name }}</td>
-                                <td>
-                                    {% if recording.actual_start_time %}
-                                        {{ recording.actual_start_time if recording.actual_start_time is string else recording.actual_start_time.strftime('%Y-%m-%d %H:%M') }}
-                                    {% elif recording.start_time %}
-                                        {{ recording.start_time if recording.start_time is string else recording.start_time.strftime('%Y-%m-%d %H:%M') }}
-                                    {% else %}
-                                        Unknown
-                                    {% endif %}
-                                </td>
+                                <td>{{ recording.actual_start_time|format_datetime if recording.actual_start_time else recording.start_time|format_datetime }}</td>
                                 <td>{{ recording.duration_minutes }} min</td>
                                 <td>
                                     <span class="badge 
@@ -213,5 +212,66 @@
             });
         });
     });
+
+  // Update browser time
+  function updateBrowserTime() {
+    const now = new Date();
+    const options = { 
+      year: 'numeric', 
+      month: '2-digit', 
+      day: '2-digit',
+      hour: '2-digit', 
+      minute: '2-digit', 
+      second: '2-digit',
+      hour12: false
+    };
+    document.getElementById('browser-time').textContent = now.toLocaleString(navigator.language, options) + 
+      ` (${Intl.DateTimeFormat().resolvedOptions().timeZone})`;
+  }
+
+  // Update relative times for upcoming recordings
+  function updateRelativeTimes() {
+    const now = new Date();
+    document.querySelectorAll('.relative-time').forEach(el => {
+      const targetTime = new Date(el.dataset.time);
+      const diffMs = targetTime - now;
+      
+      if (diffMs < 0) {
+        el.textContent = 'overdue';
+        el.classList.add('text-danger');
+      } else {
+        const diffMinutes = Math.floor(diffMs / 60000);
+        if (diffMinutes < 60) {
+          el.textContent = `in ${diffMinutes} minute${diffMinutes !== 1 ? 's' : ''}`;
+        } else {
+          const diffHours = Math.floor(diffMinutes / 60);
+          const remainingMinutes = diffMinutes % 60;
+          if (diffHours < 24) {
+            el.textContent = `in ${diffHours} hour${diffHours !== 1 ? 's' : ''} ${remainingMinutes} minute${remainingMinutes !== 1 ? 's' : ''}`;
+          } else {
+            const diffDays = Math.floor(diffHours / 24);
+            el.textContent = `in ${diffDays} day${diffDays !== 1 ? 's' : ''} ${diffHours % 24} hour${diffHours % 24 !== 1 ? 's' : ''}`;
+          }
+        }
+        
+        // Add color coding
+        if (diffMinutes < 15) {
+          el.classList.add('text-danger');
+        } else if (diffMinutes < 60) {
+          el.classList.add('text-warning');
+        } else {
+          el.classList.add('text-success');
+        }
+      }
+    });
+  }
+
+  // Update times every second
+  updateBrowserTime();
+  updateRelativeTimes();
+  setInterval(function() {
+    updateBrowserTime();
+    updateRelativeTimes();
+  }, 1000);
 </script>
 {% endblock %}

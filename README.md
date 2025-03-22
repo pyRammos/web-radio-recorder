@@ -46,6 +46,7 @@ web-radio-recorder
 - Python 3.9+
 - FFmpeg (for audio recording)
 - Git (for cloning the repository)
+- Docker and Docker Compose (for containerized deployment)
 
 ### Step 1: Clone the repository
 
@@ -131,6 +132,48 @@ pip install -r requirements.txt
 6. Check the status of the service:
    ```bash
    sudo systemctl status web-radio-recorder
+   ```
+
+### Run with Docker
+
+1. Build the Docker image:
+   ```bash
+   docker build -t web-radio-recorder .
+   ```
+
+2. Run the container:
+   ```bash
+   docker run -d -p 5000:5000 --name web-radio-recorder web-radio-recorder
+   ```
+
+3. Open your web browser and go to `http://127.0.0.1:5000` to access the application.
+
+### Run with Docker Compose
+
+1. Create a `docker-compose.yml` file in the project directory with the following content:
+   ```yaml
+   version: '3.8'
+
+   services:
+     web-radio-recorder:
+       build: .
+       ports:
+         - "5000:5000"
+       volumes:
+         - ./recordings:/app/recordings
+       restart: always
+   ```
+
+2. Start the application using Docker Compose:
+   ```bash
+   docker-compose up -d
+   ```
+
+3. Open your web browser and go to `http://127.0.0.1:5000` to access the application.
+
+4. To stop the application:
+   ```bash
+   docker-compose down
    ```
 
 ## Contributing
