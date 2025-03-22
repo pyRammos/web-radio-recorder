@@ -136,13 +136,22 @@ pip install -r requirements.txt
 
 ### Run with Docker
 
-1. Build the Docker image:
+1. Pull the Docker image from DockerHub:
+   ```bash
+   docker pull teleram/web-radio-recorder
+   ```
+   
+   Alternatively, build the Docker image locally:
    ```bash
    docker build -t web-radio-recorder .
    ```
 
 2. Run the container:
    ```bash
+   # If using the DockerHub image:
+   docker run -d -p 5000:5000 --name web-radio-recorder teleram/web-radio-recorder
+   
+   # If using the locally built image:
    docker run -d -p 5000:5000 --name web-radio-recorder web-radio-recorder
    ```
 
@@ -156,7 +165,9 @@ pip install -r requirements.txt
 
    services:
      web-radio-recorder:
-       build: .
+       image: teleram/web-radio-recorder
+       # Alternatively, build locally:
+       # build: .
        ports:
          - "5000:5000"
        volumes:
