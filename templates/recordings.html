@@ -6,13 +6,6 @@
 <div class="container">
     <h1>Recordings</h1>
     
-    <div class="mb-4">
-      <a href="/debug/scheduler" target="_blank" class="btn btn-outline-secondary btn-sm">
-        <i class="bi bi-bug"></i> Debug Scheduler Status
-      </a>
-      <small class="text-muted ms-2">Use this to get detailed information about the scheduler state.</small>
-    </div>
-    
     <!-- Navigation tabs -->
     <ul class="nav nav-tabs mb-4" id="recordingsTabs" role="tablist">
         <li class="nav-item" role="presentation">
@@ -46,27 +39,15 @@
                         <tbody>
                             {% for recording in upcoming_recordings %}
                             <tr>
-                                <td>{{ recording.station_name }}</td>
+                                <td>{{ recording.station.name }}</td>
+                                <td>{{ recording.start_time.strftime('%Y-%m-%d %H:%M') }}</td>
+                                <td>{{ recording.duration_seconds // 60 }} minutes</td>
                                 <td>
-                                    {% if recording.next_run_time %}
-                                        {{ recording.next_run_time|format_datetime }}
-                                        <span class="d-block relative-time" data-time="{{ recording.next_run_time.isoformat() if recording.next_run_time }}"></span>
+                                    {% if recording.recurring or recording.is_recurring_instance %}
+                                        <span class="badge bg-info">Recurring</span>
                                     {% else %}
-                                        {{ recording.start_time|format_datetime if recording.start_time }}
-                                        <span class="d-block relative-time" data-time="{{ recording.start_time.isoformat() if recording.start_time }}"></span>
+                                        <span class="badge bg-primary">One-time</span>
                                     {% endif %}
-                                    
-                                    {% if recording.recurring %}
-                                        <span class="badge bg-info ms-2" title="{{ recording.recurring }}">
-                                            {{ recording.recurring_type|capitalize }}
-                                        </span>
-                                    {% endif %}
-                                </td>
-                                <td>{{ recording.duration_minutes }} min</td>
-                                <td>
-                                    <span class="badge {% if recording.status == 'scheduled' %}bg-primary{% else %}bg-secondary{% endif %}">
-                                        {{ recording.status|capitalize }}
-                                    </span>
                                 </td>
                                 <td>
                                     <a href="{{ url_for('delete_recording', recording_id=recording.id) }}" 
@@ -231,38 +212,47 @@
 
   // Update relative times for upcoming recordings
   function updateRelativeTimes() {
+    const timeElements = document.querySelectorAll('.relative-time');
     const now = new Date();
-    document.querySelectorAll('.relative-time').forEach(el => {
-      const targetTime = new Date(el.dataset.time);
-      const diffMs = targetTime - now;
-      
-      if (diffMs < 0) {
-        el.textContent = 'overdue';
-        el.classList.add('text-danger');
-      } else {
-        const diffMinutes = Math.floor(diffMs / 60000);
-        if (diffMinutes < 60) {
-          el.textContent = `in ${diffMinutes} minute${diffMinutes !== 1 ? 's' : ''}`;
-        } else {
-          const diffHours = Math.floor(diffMinutes / 60);
-          const remainingMinutes = diffMinutes % 60;
-          if (diffHours < 24) {
-            el.textContent = `in ${diffHours} hour${diffHours !== 1 ? 's' : ''} ${remainingMinutes} minute${remainingMinutes !== 1 ? 's' : ''}`;
-          } else {
-            const diffDays = Math.floor(diffHours / 24);
-            el.textContent = `in ${diffDays} day${diffDays !== 1 ? 's' : ''} ${diffHours % 24} hour${diffHours % 24 !== 1 ? 's' : ''}`;
-          }
-        }
+    
+    timeElements.forEach(el => {
+        const timestamp = new Date(el.dataset.time);
+        const diffMs = timestamp - now;
         
-        // Add color coding
-        if (diffMinutes < 15) {
-          el.classList.add('text-danger');
-        } else if (diffMinutes < 60) {
-          el.classList.add('text-warning');
+        if (isNaN(diffMs)) return;
+        
+        if (diffMs < 0) {
+            el.textContent = 'overdue';
+            el.classList.add('text-danger');
         } else {
-          el.classList.add('text-success');
+            const diffMinutes = Math.floor(diffMs / 60000);
+            
+            // Don't show "0 minutes" - use more precise timing instead
+            if (diffMinutes === 0) {
+                const diffSeconds = Math.floor(diffMs / 1000);
+                el.textContent = `in ${diffSeconds} second${diffSeconds !== 1 ? 's' : ''}`;
+            } else if (diffMinutes < 60) {
+                el.textContent = `in ${diffMinutes} minute${diffMinutes !== 1 ? 's' : ''}`;
+            } else {
+                const diffHours = Math.floor(diffMinutes / 60);
+                const remainingMinutes = diffMinutes % 60;
+                if (diffHours < 24) {
+                    el.textContent = `in ${diffHours} hour${diffHours !== 1 ? 's' : ''} ${remainingMinutes} minute${remainingMinutes !== 1 ? 's' : ''}`;
+                } else {
+                    const diffDays = Math.floor(diffHours / 24);
+                    el.textContent = `in ${diffDays} day${diffDays !== 1 ? 's' : ''} ${diffHours % 24} hour${diffHours % 24 !== 1 ? 's' : ''}`;
+                }
+            }
+            
+            // Add color coding
+            if (diffMinutes < 15) {
+                el.classList.add('text-danger');
+            } else if (diffMinutes < 60) {
+                el.classList.add('text-warning');
+            } else {
+                el.classList.add('text-success');
+            }
         }
-      }
     });
   }
 

@@ -80,6 +80,15 @@ pip install -r requirements.txt
 
 ## Usage
 
+### Default Login Credentials
+
+When you first install and run the application, you can log in with the following default credentials:
+
+- Username: `admin`
+- Password: `admin123`
+
+**Important**: For security reasons, you will be prompted to change the default password upon your first login.
+
 ### Run as a standalone script
 
 1. Run the application:

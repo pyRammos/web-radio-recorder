@@ -4,147 +4,146 @@
 
 {% block content %}
 <div class="container">
-    <h1 class="mb-4">User Settings</h1>
-    
-    <!-- Flash messages -->
+    <h1 class="mb-4">Settings</h1>
+
     {% with messages = get_flashed_messages(with_categories=true) %}
         {% if messages %}
             {% for category, message in messages %}
-                <div class="alert alert-{{ category }}">{{ message }}</div>
+                <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
+                    {{ message }}
+                    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                </div>
             {% endfor %}
         {% endif %}
     {% endwith %}
-    
-    <div class="row">
-        <!-- Password Change Section -->
-        <div class="col-lg-6 mb-4">
-            <div class="card shadow">
-                <div class="card-header bg-primary text-white">
-                    <h3 class="mb-0">Change Password</h3>
-                </div>
-                <div class="card-body">
-                    <form method="POST">
-                        <div class="mb-3">
-                            <label for="current_password" class="form-label">Current Password</label>
-                            <input type="password" id="current_password" name="current_password" class="form-control" required>
-                        </div>
-                        <div class="mb-3">
-                            <label for="new_password" class="form-label">New Password</label>
-                            <input type="password" id="new_password" name="new_password" class="form-control" required>
-                        </div>
-                        <div class="mb-3">
-                            <label for="confirm_password" class="form-label">Confirm Password</label>
-                            <input type="password" id="confirm_password" name="confirm_password" class="form-control" required>
-                        </div>
-                        <button type="submit" name="change_password" class="btn btn-primary">Change Password</button>
-                    </form>
-                </div>
-            </div>
-        </div>
-        
-        <!-- Nextcloud Integration Section -->
-        <div class="col-lg-6 mb-4">
-            <div class="card shadow">
-                <div class="card-header bg-info text-white">
-                    <h3 class="mb-0">Nextcloud Integration</h3>
-                </div>
-                <div class="card-body">
-                    <form method="POST">
+
+    <form method="POST" id="settingsForm">
+        <div class="row">
+            <!-- Nextcloud Section -->
+            <div class="col-md-6 mb-4">
+                <div class="card">
+                    <div class="card-header bg-info text-white">
+                        <h3 class="card-title mb-0">Nextcloud Integration</h3>
+                    </div>
+                    <div class="card-body">
                         <div class="mb-3">
                             <label for="nextcloud_url" class="form-label">Nextcloud URL</label>
-                            <input type="url" id="nextcloud_url" name="nextcloud_url" class="form-control"
-                                   placeholder="https://your-nextcloud-instance.com" 
-                                   value="{{ settings.nextcloud_url or '' }}">
-                            <small class="text-muted">Example: https://cloud.example.com (no trailing slash)</small>
+                            <input type="url" class="form-control" id="nextcloud_url" name="nextcloud_url"
+                                   value="{{ settings.nextcloud_url or '' }}"
+                                   placeholder="https://your-nextcloud-instance.com">
                         </div>
                         <div class="mb-3">
                             <label for="nextcloud_username" class="form-label">Username</label>
-                            <input type="text" id="nextcloud_username" name="nextcloud_username" class="form-control"
+                            <input type="text" class="form-control" id="nextcloud_username" name="nextcloud_username"
                                    value="{{ settings.nextcloud_username or '' }}">
                         </div>
                         <div class="mb-3">
                             <label for="nextcloud_password" class="form-label">Password/App Password</label>
-                            <input type="password" id="nextcloud_password" name="nextcloud_password" class="form-control"
-                                   placeholder="{% if settings.nextcloud_password %}Leave blank to keep existing password{% else %}Enter password{% endif %}">
-                            <small class="text-muted">For better security, create an app password in Nextcloud settings</small>
+                            <input type="password" class="form-control" id="nextcloud_password" name="nextcloud_password"
+                                   placeholder="Leave blank to keep existing password">
                         </div>
-                        <div class="d-flex">
-                            <button type="submit" name="update_nextcloud" class="btn btn-primary me-2">Save Settings</button>
-                            <button type="submit" name="test_connection" value="1" class="btn btn-outline-secondary">Test Connection</button>
+                        <button type="button" class="btn btn-secondary" id="testNextcloud">Test Connection</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Local Storage Section -->
+            <div class="col-md-6 mb-4">
+                <div class="card">
+                    <div class="card-header bg-success text-white">
+                        <h3 class="card-title mb-0">Local Storage</h3>
+                    </div>
+                    <div class="card-body">
+                        <div class="form-check mb-3">
+                            <input type="checkbox" class="form-check-input" id="local_storage_enabled" 
+                                   name="local_storage_enabled" {% if settings.local_storage_enabled %}checked{% endif %}>
+                            <label class="form-check-label" for="local_storage_enabled">Enable Local Storage</label>
                         </div>
-                    </form>
+                        <div class="mb-3">
+                            <label for="local_storage_path" class="form-label">Storage Path</label>
+                            <input type="text" class="form-control" id="local_storage_path" 
+                                   name="local_storage_path" value="{{ settings.local_storage_path or '' }}"
+                                   placeholder="/path/to/recordings">
+                        </div>
+                        <button type="button" class="btn btn-secondary" id="testLocalStorage">Test Path</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Pushover Section -->
+            <div class="col-md-6 mb-4">
+                <div class="card">
+                    <div class="card-header bg-warning">
+                        <h3 class="card-title mb-0">Pushover Notifications</h3>
+                    </div>
+                    <div class="card-body">
+                        <div class="mb-3">
+                            <label for="pushover_api_token" class="form-label">API Token</label>
+                            <input type="text" class="form-control" id="pushover_api_token" 
+                                   name="pushover_api_token" value="{{ settings.pushover_api_token or '' }}">
+                        </div>
+                        <div class="mb-3">
+                            <label for="pushover_user_key" class="form-label">User Key</label>
+                            <input type="text" class="form-control" id="pushover_user_key" 
+                                   name="pushover_user_key" value="{{ settings.pushover_user_key or '' }}">
+                        </div>
+                        <button type="button" class="btn btn-secondary" id="testPushover">Test Notification</button>
+                    </div>
                 </div>
             </div>
         </div>
-    </div>
-    
-    <!-- Connection Status Section -->
-    <div class="row">
-        <div class="col-12">
-            <div class="card mb-4">
-                <div class="card-header bg-secondary text-white">
-                    <h3 class="mb-0">Nextcloud Status</h3>
-                </div>
-                <div class="card-body">
-                    {% if settings and settings.nextcloud_url %}
-                        <div class="d-flex align-items-center">
-                            <div class="me-3">
-                                <span class="badge bg-{% if settings.nextcloud_url and settings.nextcloud_username and settings.nextcloud_password %}primary{% else %}warning{% endif %} p-2">
-                                    {% if settings.nextcloud_url and settings.nextcloud_username and settings.nextcloud_password %}
-                                        <i class="bi bi-cloud-check"></i> Configuration Complete
-                                    {% else %}
-                                        <i class="bi bi-cloud-slash"></i> Incomplete Configuration
-                                    {% endif %}
-                                </span>
-                            </div>
-                            <div>
-                                <strong>Server:</strong> {{ settings.nextcloud_url or 'Not set' }}<br>
-                                <strong>Username:</strong> {{ settings.nextcloud_username or 'Not set' }}
-                            </div>
-                        </div>
-                        
-                        <div class="mt-3">
-                            <h5>How to use with recordings</h5>
-                            <p>When scheduling recordings, you'll now have the option to automatically upload files to your Nextcloud account. Look for the "Save to Nextcloud" option when creating a new recording schedule.</p>
-                        </div>
-                    {% else %}
-                        <div class="alert alert-info">
-                            <i class="bi bi-info-circle"></i> Nextcloud integration is not configured. Fill in the settings above to enable automatic uploads.
-                        </div>
-                    {% endif %}
-                </div>
+
+        <!-- Save Button -->
+        <div class="row mt-3">
+            <div class="col-12">
+                <button type="submit" class="btn btn-primary btn-lg" name="save_settings" value="1">
+                    Save All Settings
+                </button>
             </div>
         </div>
-    </div>
-    
-    <!-- Help Section -->
-    <div class="row">
-        <div class="col-12">
-            <div class="card">
-                <div class="card-header bg-light">
-                    <h3 class="mb-0">Help & Tips</h3>
-                </div>
-                <div class="card-body">
-                    <h5>About Nextcloud Integration</h5>
-                    <p>This feature allows you to automatically upload your recorded radio stations to your Nextcloud server. Great for backing up recordings or accessing them from any device.</p>
-                    
-                    <h5>Security Tips</h5>
-                    <ul>
-                        <li>Use an app-specific password instead of your main Nextcloud password</li>
-                        <li>Create a dedicated user in Nextcloud with limited access</li>
-                        <li>Make sure your Nextcloud server uses HTTPS</li>
-                    </ul>
-                    
-                    <h5>Troubleshooting</h5>
-                    <ul>
-                        <li>If uploads fail, check your Nextcloud URL format (should not include trailing slash)</li>
-                        <li>Verify that your username and password are correct</li>
-                        <li>Ensure the user has write permissions to the target folder</li>
-                        <li>Check that WebDAV is enabled on your Nextcloud server</li>
-                    </ul>
-                </div>
-            </div>
-        </div>
-    </div>
+    </form>
 </div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const form = document.getElementById('settingsForm');
+    
+    // Test Nextcloud Connection
+    document.getElementById('testNextcloud').addEventListener('click', function() {
+        const button = this;
+        button.disabled = true;
+        button.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Testing...';
+        
+        fetch('/test_nextcloud', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                url: document.getElementById('nextcloud_url').value,
+                username: document.getElementById('nextcloud_username').value,
+                password: document.getElementById('nextcloud_password').value
+            })
+        })
+        .then(response => response.json())
+        .then(data => {
+            alert(data.message);
+        })
+        .catch(error => {
+            alert('Connection test failed');
+        })
+        .finally(() => {
+            button.disabled = false;
+            button.innerHTML = 'Test Connection';
+        });
+    });
+
+    // Add loading indicator when form is submitted
+    form.addEventListener('submit', function() {
+        const submitButton = form.querySelector('button[type="submit"]');
+        submitButton.disabled = true;
+        submitButton.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Saving...';
+    });
+});
+</script>
 {% endblock %}

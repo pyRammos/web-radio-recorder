@@ -14,8 +14,16 @@
                 
                 <div class="row mb-3">
                     <div class="col-md-6">
-                        <label for="start_date" class="form-label">Date</label>
-                        <input type="date" class="form-control" id="start_date" name="start_date" required>
+                        <label for="date_display" class="form-label">Date</label>
+                        <div class="input-group">
+                            <input type="text" class="form-control" id="date_display" readonly>
+                            <input type="hidden" id="start_date" name="start_date">
+                            <button class="btn btn-outline-secondary" type="button" id="date_picker_toggle">
+                                <i class="bi bi-calendar"></i>
+                            </button>
+                        </div>
+                        <!-- The date picker will be placed here by JavaScript -->
+                        <div id="date_picker_container" style="display: none; position: absolute; z-index: 1000;"></div>
                     </div>
                     <div class="col-md-6">
                         <label for="start_time" class="form-label">Time</label>
@@ -133,22 +141,48 @@
                 <div class="card mb-3" id="nextcloud-options">
                     <div class="card-header">
                         <h5>Nextcloud Integration</h5>
-                    </div>
-                    <div class="card-body">
-                        <div class="form-check mb-3">
-                            <input type="checkbox" class="form-check-input" id="save_to_nextcloud" name="save_to_nextcloud">
-                            <label class="form-check-label" for="save_to_nextcloud">
-                                Save recordings to Nextcloud
-                            </label>
+                        <div class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox" id="save_to_nextcloud" name="save_to_nextcloud">
+                            <label class="form-check-label" for="save_to_nextcloud">Save recordings to Nextcloud</label>
                         </div>
-                        
-                        <div id="nextcloud-folder-group" class="mb-3 d-none">
+                    </div>
+                    <div class="card-body nextcloud-settings">
+                        <div id="nextcloud-folder-group" class="mb-3">
                             <label for="nextcloud_folder" class="form-label">Nextcloud folder path</label>
                             <input type="text" class="form-control" id="nextcloud_folder" name="nextcloud_folder" 
                                    value="Recordings/{{ station.name }}">
                             <small class="text-muted">Path where recordings will be stored in Nextcloud</small>
                         </div>
+                        
+                        <div class="mb-3 form-check">
+                            <input type="checkbox" class="form-check-input" id="nextcloud_create_folder_structure" name="nextcloud_create_folder_structure" checked>
+                            <label class="form-check-label" for="nextcloud_create_folder_structure">Create station/year/month folder structure</label>
+                        </div>
                     </div>
+                </div>
+
+                <!-- Add this section in the form after the Nextcloud settings -->
+                <div class="card mb-3" id="localStorageSettings">
+                  <div class="card-header">
+                    <h5>Local Storage Settings</h5>
+                    <div class="form-check form-switch">
+                      <input class="form-check-input" type="checkbox" id="save_to_local" name="save_to_local">
+                      <label class="form-check-label" for="save_to_local">Save a copy to local folder</label>
+                    </div>
+                  </div>
+                  <div class="card-body local-settings">
+                    <div class="mb-3">
+                      <label for="local_folder" class="form-label">Local Folder (optional)</label>
+                      <input type="text" class="form-control" id="local_folder" name="local_folder" 
+                             placeholder="Override default path">
+                      <div class="form-text">Leave empty to use default path from your settings</div>
+                    </div>
+                    
+                    <div class="mb-3 form-check">
+                      <input type="checkbox" class="form-check-input" id="create_folder_structure" name="create_folder_structure" checked>
+                      <label class="form-check-label" for="create_folder_structure">Create station/year/month folder structure</label>
+                    </div>
+                  </div>
                 </div>
 
                 <!-- Add this to your schedule_recording.html template where podcast options are -->
@@ -156,6 +190,25 @@
                     <label for="max_recordings" class="form-label">Maximum recordings to keep</label>
                     <input type="number" class="form-control" id="max_recordings" name="max_recordings" value="0" min="0" max="100">
                     <small class="text-muted">Set to 0 to keep all recordings. Otherwise, older recordings will be automatically deleted when this limit is reached.</small>
+                </div>
+
+                <!-- Add this before the submit button in schedule_recording.html -->
+                <div class="card mb-3" id="pushover-options">
+                  <div class="card-header">
+                    <h5>Pushover Notifications</h5>
+                    <div class="form-check form-switch">
+                      <input class="form-check-input" type="checkbox" id="pushover_enabled" name="pushover_enabled">
+                      <label class="form-check-label" for="pushover_enabled">Send notification when recording completes</label>
+                    </div>
+                  </div>
+                  <div class="card-body pushover-info">
+                    <p class="text-muted">
+                      Receive a notification on your devices when this recording finishes, with details about the duration and file size.
+                    </p>
+                    <p class="text-info mb-0">
+                      <i class="fas fa-info-circle"></i> Configure your Pushover API credentials in <a href="{{ url_for('settings') }}">Settings</a> to enable notifications.
+                    </p>
+                  </div>
                 </div>
 
                 <div class="mt-4 d-flex justify-content-between">
@@ -171,12 +224,241 @@
     </div>
 </div>
 
+<!-- Update the style section -->
+<style>
+#date_picker_container {
+    position: absolute;
+    z-index: 1000;
+    top: 100%; /* Position below the input */
+    left: 0;
+    margin-top: 5px;
+    box-shadow: 0 0.5rem 1rem rgba(0, 0, 0, 0.15);
+    background-color: white; /* Ensure it has a background */
+    min-width: 250px; /* Ensure it's wide enough */
+    min-height: 250px; /* Ensure it's tall enough */
+    border: 1px solid #ddd;
+    border-radius: 0.25rem;
+}
+</style>
+
 <script>
 document.addEventListener('DOMContentLoaded', function() {
-    // Set today as the minimum date for the date picker
-    const today = new Date().toISOString().split('T')[0];
-    document.getElementById('start_date').setAttribute('min', today);
-    document.getElementById('start_date').value = today;
+    // Format date as DD MMM YYYY (e.g., "22 Mar 2025")
+    function formatDateForDisplay(date) {
+        const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+        const day = String(date.getDate()).padStart(2, '0');
+        const month = months[date.getMonth()];
+        const year = date.getFullYear();
+        return `${day} ${month} ${year}`;
+    }
+    
+    // Format date as YYYY-MM-DD for form submission
+    function formatDateForInput(date) {
+        const year = date.getFullYear();
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const day = String(date.getDate()).padStart(2, '0');
+        return `${year}-${month}-${day}`;
+    }
+    
+    // Get current date and format it
+    const today = new Date();
+    
+    // Set up the date display and hidden input
+    const dateDisplay = document.getElementById('date_display');
+    const dateInput = document.getElementById('start_date');
+    const datePickerToggle = document.getElementById('date_picker_toggle');
+    const datePickerContainer = document.getElementById('date_picker_container');
+    
+    // Set initial values
+    dateDisplay.value = formatDateForDisplay(today);
+    dateInput.value = formatDateForInput(today);
+    
+    // Create simple date picker
+    function createDatePicker() {
+        // Clear previous content
+        datePickerContainer.innerHTML = '';
+        
+        // Create calendar container
+        const calendar = document.createElement('div');
+        calendar.className = 'card p-2';
+        
+        // Get date from hidden input
+        const currentDate = new Date(dateInput.value);
+        const currentMonth = currentDate.getMonth();
+        const currentYear = currentDate.getFullYear();
+        
+        // Create month/year header
+        const header = document.createElement('div');
+        header.className = 'd-flex justify-content-between align-items-center mb-2';
+        
+        const prevBtn = document.createElement('button');
+        prevBtn.className = 'btn btn-sm btn-outline-secondary';
+        prevBtn.innerHTML = '&laquo;';
+        prevBtn.onclick = function() {
+            currentDate.setMonth(currentDate.getMonth() - 1);
+            updateCalendar(currentDate);
+        };
+        
+        const monthYearText = document.createElement('div');
+        const months = ['January', 'February', 'March', 'April', 'May', 'June', 
+                       'July', 'August', 'September', 'October', 'November', 'December'];
+        monthYearText.textContent = `${months[currentMonth]} ${currentYear}`;
+        
+        const nextBtn = document.createElement('button');
+        nextBtn.className = 'btn btn-sm btn-outline-secondary';
+        nextBtn.innerHTML = '&raquo;';
+        nextBtn.onclick = function() {
+            currentDate.setMonth(currentDate.getMonth() + 1);
+            updateCalendar(currentDate);
+        };
+        
+        header.appendChild(prevBtn);
+        header.appendChild(monthYearText);
+        header.appendChild(nextBtn);
+        calendar.appendChild(header);
+        
+        // Create weekday header
+        const weekdays = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
+        const weekdayRow = document.createElement('div');
+        weekdayRow.className = 'd-flex justify-content-between mb-1';
+        
+        weekdays.forEach(day => {
+            const dayEl = document.createElement('div');
+            dayEl.className = 'text-center';
+            dayEl.style.width = '2rem';
+            dayEl.textContent = day;
+            weekdayRow.appendChild(dayEl);
+        });
+        
+        calendar.appendChild(weekdayRow);
+        
+        // Create days grid
+        const daysGrid = document.createElement('div');
+        
+        // Get first day of month and number of days
+        const firstDay = new Date(currentYear, currentMonth, 1).getDay();
+        const daysInMonth = new Date(currentYear, currentMonth + 1, 0).getDate();
+        
+        // Create date cells
+        let dayCount = 1;
+        
+        for (let i = 0; i < 6; i++) {
+            if (dayCount > daysInMonth) break;
+            
+            const weekRow = document.createElement('div');
+            weekRow.className = 'd-flex justify-content-between mb-1';
+            
+            for (let j = 0; j < 7; j++) {
+                const dayCell = document.createElement('div');
+                dayCell.className = 'text-center';
+                dayCell.style.width = '2rem';
+                dayCell.style.cursor = 'pointer';
+                
+                if (i === 0 && j < firstDay) {
+                    // Empty cell before first day
+                    dayCell.textContent = '';
+                } else if (dayCount <= daysInMonth) {
+                    // Day cell
+                    dayCell.textContent = dayCount;
+                    
+                    // Check if this is today's date
+                    const thisDate = new Date(currentYear, currentMonth, dayCount);
+                    const now = new Date();
+                    const isToday = thisDate.getDate() === now.getDate() && 
+                                   thisDate.getMonth() === now.getMonth() && 
+                                   thisDate.getFullYear() === now.getFullYear();
+                    
+                    // Check if this is the selected date
+                    const selectedDate = new Date(dateInput.value);
+                    const isSelected = thisDate.getDate() === selectedDate.getDate() && 
+                                      thisDate.getMonth() === selectedDate.getMonth() && 
+                                      thisDate.getFullYear() === selectedDate.getFullYear();
+                    
+                    // Style based on state
+                    if (isSelected) {
+                        dayCell.className += ' bg-primary text-white rounded';
+                    } else if (isToday) {
+                        dayCell.className += ' bg-light rounded';
+                    }
+                    
+                    // Set minimum date to today
+                    const isPast = thisDate < new Date(now.setHours(0,0,0,0));
+                    if (isPast) {
+                        dayCell.className += ' text-muted';
+                        dayCell.style.cursor = 'not-allowed';
+                    } else {
+                        // Add click handler for valid dates
+                        dayCell.onclick = function() {
+                            const selectedDate = new Date(currentYear, currentMonth, parseInt(this.textContent));
+                            dateDisplay.value = formatDateForDisplay(selectedDate);
+                            dateInput.value = formatDateForInput(selectedDate);
+                            datePickerContainer.style.display = 'none';
+                        };
+                    }
+                    
+                    dayCount++;
+                } else {
+                    // Empty cell after last day
+                    dayCell.textContent = '';
+                }
+                
+                weekRow.appendChild(dayCell);
+            }
+            
+            daysGrid.appendChild(weekRow);
+        }
+        
+        calendar.appendChild(daysGrid);
+        datePickerContainer.appendChild(calendar);
+    }
+    
+    function updateCalendar(date) {
+        // Update the date we're viewing in the calendar
+        currentMonth = date.getMonth();
+        currentYear = date.getFullYear();
+        
+        // Recreate the calendar
+        createDatePicker();
+    }
+    
+    // Toggle date picker on button click
+    datePickerToggle.addEventListener('click', function (e) {
+        e.preventDefault(); // Prevent form submission
+        e.stopPropagation(); // Prevent the document click handler from running
+
+        // Check computed style instead of the style property
+        const computedStyle = window.getComputedStyle(datePickerContainer);
+
+        if (computedStyle.display === 'none') {
+            createDatePicker();
+
+            // Dynamically position the date picker below the input field
+            const rect = dateDisplay.getBoundingClientRect();
+            const containerRect = datePickerContainer.parentElement.getBoundingClientRect();
+
+            datePickerContainer.style.top = `${rect.bottom - containerRect.top}px`;
+            datePickerContainer.style.left = `${rect.left - containerRect.left}px`;
+
+            datePickerContainer.style.display = 'block';
+        } else {
+            datePickerContainer.style.display = 'none';
+        }
+    });
+
+    // Close date picker when clicking outside
+    document.addEventListener('click', function (e) {
+        const computedStyle = window.getComputedStyle(datePickerContainer);
+
+        // If the date picker is displayed and the click is outside of it
+        if (
+            computedStyle.display !== 'none' &&
+            !datePickerContainer.contains(e.target) &&
+            e.target !== datePickerToggle &&
+            e.target !== dateDisplay
+        ) {
+            datePickerContainer.style.display = 'none';
+        }
+    });
     
     // Set current time + 1 minute as the default time
     const now = new Date();
@@ -202,15 +484,23 @@ document.addEventListener('DOMContentLoaded', function() {
     // Initialize on page load
     togglePodcastDetails();
     
-    // Show/hide Nextcloud folder field based on checkbox
-    document.getElementById('save_to_nextcloud').addEventListener('change', function() {
-        const folderGroup = document.getElementById('nextcloud-folder-group');
-        if (this.checked) {
-            folderGroup.classList.remove('d-none');
-        } else {
-            folderGroup.classList.add('d-none');
-        }
-    });
+    // Show/hide nextcloud settings based on switch
+    const saveToNextcloudSwitch = document.getElementById('save_to_nextcloud');
+    const nextcloudSettingsDiv = document.querySelector('.nextcloud-settings');
+    
+    function updateNextcloudSettingsVisibility() {
+      if (saveToNextcloudSwitch.checked) {
+        nextcloudSettingsDiv.style.display = 'block';
+      } else {
+        nextcloudSettingsDiv.style.display = 'none';
+      }
+    }
+    
+    // Initial state
+    updateNextcloudSettingsVisibility();
+    
+    // Update on change
+    saveToNextcloudSwitch.addEventListener('change', updateNextcloudSettingsVisibility);
 
     // Only show retention options for recurring recordings
     document.getElementById('recurring_type').addEventListener('change', function() {
@@ -229,6 +519,42 @@ document.addEventListener('DOMContentLoaded', function() {
     if (recurringType.value === 'once') {
         retentionOptions.style.display = 'none';
     }
+
+    // Show/hide local settings based on checkbox
+    const saveToLocalCheckbox = document.getElementById('save_to_local');
+    const localSettingsDiv = document.querySelector('.local-settings');
+    
+    function updateLocalSettingsVisibility() {
+      if (saveToLocalCheckbox.checked) {
+        localSettingsDiv.style.display = 'block';
+      } else {
+        localSettingsDiv.style.display = 'none';
+      }
+    }
+    
+    // Initial state
+    updateLocalSettingsVisibility();
+    
+    // Update on change
+    saveToLocalCheckbox.addEventListener('change', updateLocalSettingsVisibility);
+
+    // Show/hide pushover info based on switch
+    const pushoverEnabledSwitch = document.getElementById('pushover_enabled');
+    const pushoverInfoDiv = document.querySelector('.pushover-info');
+
+    function updatePushoverInfoVisibility() {
+      if (pushoverEnabledSwitch.checked) {
+        pushoverInfoDiv.style.display = 'block';
+      } else {
+        pushoverInfoDiv.style.display = 'none';
+      }
+    }
+
+    // Initial state
+    updatePushoverInfoVisibility();
+
+    // Update on change
+    pushoverEnabledSwitch.addEventListener('change', updatePushoverInfoVisibility);
 });
 </script>
 {% endblock %}

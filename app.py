@@ -1,6 +1,7 @@
 # At the beginning of your file
 import os
 from dotenv import load_dotenv
+import copy
 
 # Load environment variables from .env file
 load_dotenv()
@@ -76,6 +77,9 @@ if not os.environ.get('FLASK_DEBUG', 'False').lower() == 'true':
 # Initialize database
 db = SQLAlchemy(app)
 
+# Add this import with your other SQLAlchemy imports
+from sqlalchemy import text
+
 # Update your scheduler to use SQLAlchemy for job storage
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 
@@ -109,16 +113,28 @@ class UserSettings(db.Model):
     # Relationship with User model
     user = db.relationship('User', backref=db.backref('settings', uselist=False))
 
+    # Local filesystem settings
+    local_storage_enabled = db.Column(db.Boolean, default=False)
+    local_storage_path = db.Column(db.String(255))
+    create_folder_structure = db.Column(db.Boolean, default=True)
+
+    # Pushover integration
+    pushover_api_token = db.Column(db.String(100))
+    pushover_user_key = db.Column(db.String(100))
+    pushover_enabled = db.Column(db.Boolean, default=False)
+
 class Station(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(100), nullable=False)
     url = db.Column(db.String(255), nullable=False)
-    recordings = db.relationship('Recording', backref='station', lazy=True)
+    # Add any other fields specific to a station
 
 class Recording(db.Model):
     id = db.Column(db.String(36), primary_key=True)
     station_id = db.Column(db.Integer, db.ForeignKey('station.id'), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'))
     start_time = db.Column(db.DateTime)
+    end_time = db.Column(db.DateTime)
     duration_minutes = db.Column(db.Integer, nullable=False)
     duration_seconds = db.Column(db.Integer, nullable=False)
     output_file = db.Column(db.String(255))
@@ -147,10 +163,24 @@ class Recording(db.Model):
     nextcloud_folder = db.Column(db.String(255))
     nextcloud_status = db.Column(db.String(20))  # success, failed, pending
     nextcloud_error = db.Column(db.Text)
+    nextcloud_create_folder_structure = db.Column(db.Boolean, default=True)  # Add this line
 
     # Retention settings
     max_recordings = db.Column(db.Integer, default=0)  # 0 means keep all recordings
 
+    # Local filesystem integration
+    save_to_local = db.Column(db.Boolean, default=False)
+    local_folder = db.Column(db.String(255))
+    create_folder_structure = db.Column(db.Boolean, default=True)
+    local_status = db.Column(db.String(20))  # success, failed, pending
+    local_error = db.Column(db.Text)
+
+    # Pushover notification
+    pushover_enabled = db.Column(db.Boolean, default=False)
+    
+    # Station relationship
+    station = db.relationship('Station', backref='recordings')
+    
     def to_dict(self):
         """Convert record to dictionary for scheduler compatibility"""
         result = {
@@ -184,8 +214,26 @@ class Recording(db.Model):
                 'explicit': self.podcast_explicit,
                 'image': self.podcast_image
             }
+        
+        # Add local storage info
+        if self.save_to_local:
+            result['local_storage'] = {
+                'enabled': self.save_to_local,
+                'folder': self.local_folder,
+                'create_folder_structure': self.create_folder_structure,
+                'status': self.local_status
+            }
             
         return result
+    
+    # Custom property to flag recurring instances
+    @property
+    def is_recurring_instance(self):
+        return getattr(self, '_is_recurring_instance', False)
+    
+    @is_recurring_instance.setter
+    def is_recurring_instance(self, value):
+        self._is_recurring_instance = value
 
 # Initialize login manager
 login_manager = LoginManager()
@@ -219,9 +267,9 @@ def record_audio(recording_id, station_url, output_file, duration_seconds):
         base_directory = os.path.dirname(output_file)
         extension = os.path.splitext(output_file)[1]
         
-        # Format: [StationName][YYYYMMDD-DDD].mp3
+        # Format: [StationName]YYMMDD-DDD.mp3 (2-digit year)
         current_time = datetime.now()
-        formatted_date = current_time.strftime('%Y%m%d')
+        formatted_date = current_time.strftime('%y%m%d')  # Using 2-digit year, month, and day
         day_name = current_time.strftime('%a')  # 3-letter day abbreviation (Sun, Mon, etc.)
         
         # Use station name, date and day of week for the new format
@@ -246,6 +294,45 @@ def record_audio(recording_id, station_url, output_file, duration_seconds):
         app.logger.info(f"  - Duration: {duration_seconds} seconds")
         app.logger.info(f"  - URL: {station_url}")
         
+        # Check if the output file already exists and has content
+        file_exists = os.path.exists(output_file)
+        file_size = 0
+        if file_exists:
+            file_size = os.path.getsize(output_file)
+        
+        # If file already exists and has content, we'll append to it
+        if file_exists and file_size > 0:
+            app.logger.info(f"Found existing recording file ({file_size} bytes), will append to it")
+            
+            # Get approximate duration of existing recording
+            try:
+                # Use ffprobe to get existing duration
+                probe_cmd = [
+                    'ffprobe', 
+                    '-v', 'error', 
+                    '-show_entries', 'format=duration', 
+                    '-of', 'default=noprint_wrappers=1:nokey=1', 
+                    output_file
+                ]
+                existing_duration = float(subprocess.check_output(probe_cmd).decode('utf-8').strip())
+                
+                # Calculate remaining duration
+                remaining_duration = max(0, duration_seconds - existing_duration)
+                app.logger.info(f"Existing recording duration: {existing_duration}s, remaining: {remaining_duration}s")
+                
+                if remaining_duration <= 0:
+                    app.logger.info(f"Recording already complete, marking as finished")
+                    recording_db.status = 'completed'
+                    recording_db.end_time = datetime.now()
+                    db.session.commit()
+                    return
+                
+                # Update duration to record only the remaining time
+                duration_seconds = remaining_duration
+            except Exception as e:
+                app.logger.warning(f"Could not determine existing recording duration: {e}")
+                # Continue with the full duration as fallback
+        
         # Create the ffmpeg command to record the stream
         max_retries = 3
         retry_count = 0
@@ -253,16 +340,40 @@ def record_audio(recording_id, station_url, output_file, duration_seconds):
         
         while retry_count < max_retries and not success:
             try:
-                # Construct ffmpeg command
-                command = [
-                    'ffmpeg',
-                    '-y',  # Overwrite output file if it exists
-                    '-i', station_url,
-                    '-t', str(duration_seconds),
-                    '-c:a', 'copy',  # Copy audio stream without re-encoding if possible
-                    '-v', 'warning',  # Only show warnings and errors
-                    output_file
-                ]
+                if file_exists and file_size > 0:
+                    # Create a temporary file for the new recording segment
+                    temp_output = f"{output_file}.part"
+                    
+                    # Record to temporary file
+                    command = [
+                        'ffmpeg',
+                        '-reconnect', '1',
+                        '-reconnect_streamed', '1',
+                        '-reconnect_delay_max', '30',
+                        '-reconnect_at_eof', '1',
+                        '-reconnect_on_network_error', '1',
+                        '-i', station_url,
+                        '-t', str(duration_seconds),
+                        '-c:a', 'copy',
+                        '-v', 'warning',
+                        temp_output
+                    ]
+                else:
+                    # Record directly to output file if it doesn't exist or is empty
+                    command = [
+                        'ffmpeg',
+                        '-y',
+                        '-reconnect', '1',
+                        '-reconnect_streamed', '1',
+                        '-reconnect_delay_max', '30',
+                        '-reconnect_at_eof', '1',
+                        '-reconnect_on_network_error', '1',
+                        '-i', station_url,
+                        '-t', str(duration_seconds),
+                        '-c:a', 'copy',
+                        '-v', 'warning',
+                        output_file
+                    ]
                 
                 # Start the process and capture output
                 app.logger.info(f"Running command: {' '.join(command)}")
@@ -273,6 +384,31 @@ def record_audio(recording_id, station_url, output_file, duration_seconds):
                 
                 # Check if the recording was successful
                 if process.returncode == 0:
+                    # If we were recording to a temporary file, now concatenate it
+                    if file_exists and file_size > 0 and os.path.exists(temp_output):
+                        concat_cmd = [
+                            'ffmpeg',
+                            '-y',
+                            '-i', 'concat:' + output_file + '|' + temp_output,
+                            '-c', 'copy',
+                            output_file + '.new'
+                        ]
+                        
+                        app.logger.info(f"Concatenating files: {' '.join(concat_cmd)}")
+                        concat_process = subprocess.Popen(concat_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                        concat_stdout, concat_stderr = concat_process.communicate()
+                        
+                        if concat_process.returncode == 0:
+                            # Replace original with concatenated file
+                            os.remove(output_file)
+                            os.rename(output_file + '.new', output_file)
+                            os.remove(temp_output)
+                            app.logger.info("Successfully appended to existing recording")
+                        else:
+                            app.logger.error(f"Failed to concatenate files: {concat_stderr.decode('utf-8')}")
+                            # Keep the partial recording as backup
+                            os.rename(temp_output, output_file + '.part')
+                    
                     # Success - update recording status
                     recording_db.status = 'completed'
                     recording_db.end_time = datetime.now()
@@ -280,27 +416,102 @@ def record_audio(recording_id, station_url, output_file, duration_seconds):
                     
                     app.logger.info(f"Recording completed successfully: {recording_id}")
                     
-                    # If this is a recurring job with Nextcloud settings, try to upload
-                    if recording_db.recurring and recording_db.nextcloud_enabled:
+                    # Get file size
+                    if os.path.exists(output_file):
+                        recording_db.file_size = os.path.getsize(output_file)
+                        db.session.commit()
+                    
+                    # Save to local storage if enabled
+                    if recording_db.save_to_local:
+                        app.logger.info(f"Saving copy to local storage for recording: {recording_id}")
+                        
+                        try:
+                            # Get local folder from recording
+                            local_folder = recording_db.local_folder
+                            
+                            # If no folder specified in recording, try to get from user settings
+                            if not local_folder and hasattr(recording_db, 'user_id') and recording_db.user_id:
+                                creator = User.query.get(recording_db.user_id)
+                                user_settings = UserSettings.query.filter_by(user_id=creator.id).first() if creator else None
+                                if user_settings:
+                                    local_folder = user_settings.local_storage_path
+                            
+                            # Fall back to default folder if needed
+                            if not local_folder:
+                                # Use a default location under recordings folder
+                                local_folder = os.path.join(app.config['RECORDINGS_FOLDER'], 'local_storage')
+                                app.logger.info(f"Using default local folder: {local_folder}")
+                            
+                            create_structure = recording_db.create_folder_structure
+                            
+                            if create_structure:
+                                # Create folder structure: [Base Path]/[Station Name]/YYYY/MM-MMM/
+                                year_folder = current_time.strftime('%Y')
+                                month_folder = current_time.strftime('%-m-%b')  # 3-Mar format
+                                station_folder = recording_db.station.name
+                                
+                                local_path = os.path.join(local_folder, station_folder, year_folder, month_folder)
+                            else:
+                                local_path = local_folder
+                            
+                            # Create directory if it doesn't exist
+                            os.makedirs(local_path, exist_ok=True)
+                            
+                            # Full path including filename
+                            local_file_path = os.path.join(local_path, os.path.basename(output_file))
+                            
+                            # Copy the file
+                            shutil.copy2(output_file, local_file_path)
+                            
+                            app.logger.info(f"Local copy created at: {local_file_path}")
+                            recording_db.local_status = 'success'
+                        except Exception as e:
+                            error_msg = str(e)
+                            app.logger.error(f"Local storage copy failed: {error_msg}")
+                            recording_db.local_status = 'failed'
+                            recording_db.local_error = error_msg
+                        
+                        db.session.commit()
+                    
+                    # Handle Nextcloud upload if enabled
+                    if recording_db.save_to_nextcloud:
                         app.logger.info(f"Attempting Nextcloud upload for recording: {recording_id}")
                         
                         # Get the user for their Nextcloud settings
                         creator = User.query.get(recording_db.user_id) if recording_db.user_id else None
                         
-                        if creator and creator.nextcloud_url and creator.nextcloud_username and creator.nextcloud_password:
+                        # Get user settings
+                        user_settings = UserSettings.query.filter_by(user_id=creator.id).first() if creator else None
+                        
+                        if creator and user_settings and user_settings.nextcloud_url and user_settings.nextcloud_username and user_settings.nextcloud_password:
                             # Determine remote path
-                            remote_path = recording_db.nextcloud_folder or '/Recordings/'
-                            if not remote_path.endswith('/'):
-                                remote_path += '/'
+                            base_remote_path = recording_db.nextcloud_folder or '/Recordings/'
+                            if not base_remote_path.endswith('/'):
+                                base_remote_path += '/'
+                                
+                            # Create folder structure if enabled
+                            if recording_db.nextcloud_create_folder_structure:
+                                # Create folder structure: [Base Path]/[Station Name]/YYYY/MM-MMM/
+                                current_time = datetime.now()
+                                year_folder = current_time.strftime('%Y')
+                                month_folder = current_time.strftime('%-m-%b')  # 3-Mar format
+                                station_folder = recording_db.station.name
+                                
+                                remote_path = f"{base_remote_path}{station_folder}/{year_folder}/{month_folder}/"
+                                app.logger.info(f"Using structured NextCloud path: {remote_path}")
+                            else:
+                                remote_path = base_remote_path
+                                
+                            # Add filename to path
                             remote_path += os.path.basename(output_file)
                             
                             # Attempt upload
                             success, message = upload_to_nextcloud(
                                 output_file,
                                 remote_path,
-                                creator.nextcloud_url,
-                                creator.nextcloud_username,
-                                creator.nextcloud_password
+                                user_settings.nextcloud_url,
+                                user_settings.nextcloud_username,
+                                user_settings.nextcloud_password
                             )
                             
                             if success:
@@ -316,6 +527,56 @@ def record_audio(recording_id, station_url, output_file, duration_seconds):
                     # Run retention policy check if needed
                     if recording_db.max_recordings > 0 and recording_db.podcast_uuid:
                         clean_up_old_recordings(recording_db.podcast_uuid, recording_db.max_recordings)
+                    
+                    # After the recording is complete and marked as successful
+                    if recording_db.pushover_enabled and recording_db.user_id:
+                        app.logger.info(f"Sending Pushover notification for completed recording: {recording_id}")
+                        
+                        # Get actual recording duration using ffprobe
+                        actual_duration = 0
+                        try:
+                            probe_cmd = [
+                                'ffprobe', 
+                                '-v', 'error', 
+                                '-show_entries', 'format=duration', 
+                                '-of', 'default=noprint_wrappers=1:nokey=1', 
+                                output_file
+                            ]
+                            actual_duration = float(subprocess.check_output(probe_cmd, timeout=15).decode('utf-8').strip())
+                        except Exception as e:
+                            app.logger.warning(f"Could not determine actual duration: {e}")
+                            actual_duration = recording_db.duration_seconds
+                        
+                        # Format the duration nicely
+                        minutes, seconds = divmod(int(actual_duration), 60)
+                        hours, minutes = divmod(minutes, 60)
+                        
+                        if hours > 0:
+                            duration_str = f"{hours}h {minutes}m {seconds}s"
+                        else:
+                            duration_str = f"{minutes}m {seconds}s"
+                        
+                        # Create notification message
+                        title = f"Recording Complete: {recording_db.station.name}"
+                        message = f"Recording '{os.path.basename(output_file)}' completed successfully.\n"
+                        message += f"Duration: {duration_str}"
+                        
+                        # Include file size if available
+                        if recording_db.file_size:
+                            file_size_mb = recording_db.file_size / (1024 * 1024)
+                            message += f"\nSize: {file_size_mb:.2f} MB"
+                        
+                        # Send the notification
+                        success, msg = send_pushover_notification(
+                            recording_db.user_id,
+                            title,
+                            message
+                        )
+                        
+                        if success:
+                            app.logger.info(f"Pushover notification sent successfully")
+                        else:
+                            app.logger.warning(f"Failed to send Pushover notification: {msg}")
                     
                     success = True
                 else:
@@ -350,38 +611,78 @@ def record_audio(recording_id, station_url, output_file, duration_seconds):
 
 def schedule_recording_job(recording_id, station_url, output_file, start_time, duration_seconds, recurring=None):
     """Schedule a recording job using the APScheduler."""
+    # Add verbose logging
+    app.logger.info(f"Scheduling recording job: {recording_id}")
+    app.logger.info(f"  - Station URL: {station_url}")
+    app.logger.info(f"  - Output file: {output_file}")
+    app.logger.info(f"  - Start time: {start_time}")
+    app.logger.info(f"  - Duration: {duration_seconds} seconds")
+    app.logger.info(f"  - Recurring: {recurring}")
+    
     # Check if the job is already scheduled
     job = scheduler.get_job(recording_id)
     if job:
+        app.logger.info(f"Removing existing job for {recording_id}")
         job.remove()
     
     if recurring:
         # Parse the cron expression
         cron_parts = recurring.split()
+        app.logger.info(f"Setting up recurring job with cron: {recurring}")
         
         # Add the job with a cron trigger
-        job = scheduler.add_job(
-            record_audio,
-            trigger=CronTrigger(
-                minute=cron_parts[0],
-                hour=cron_parts[1],
-                day=cron_parts[2],
-                month=cron_parts[3],
-                day_of_week=cron_parts[4]
-            ),
-            id=recording_id,
-            args=[recording_id, station_url, output_file, duration_seconds],
-            name=f"Recurring Recording {recording_id}"
-        )
+        try:
+            job = scheduler.add_job(
+                record_audio,
+                trigger=CronTrigger(
+                    minute=cron_parts[0],
+                    hour=cron_parts[1],
+                    day=cron_parts[2],
+                    month=cron_parts[3],
+                    day_of_week=cron_parts[4]
+                ),
+                id=recording_id,
+                args=[recording_id, station_url, output_file, duration_seconds],
+                name=f"Recurring Recording {recording_id}"
+            )
+            app.logger.info(f"Successfully scheduled recurring job: {recording_id}")
+        except Exception as e:
+            app.logger.error(f"Failed to schedule recurring job: {e}")
     else:
         # Add the job with a date trigger (one-time)
-        scheduler.add_job(
-            record_audio,
-            trigger=DateTrigger(run_date=start_time),
-            id=recording_id,
-            args=[recording_id, station_url, output_file, duration_seconds],
-            name=f"Recording {recording_id}"
-        )
+        try:
+            job = scheduler.add_job(
+                record_audio,
+                trigger=DateTrigger(run_date=start_time),
+                id=recording_id,
+                args=[recording_id, station_url, output_file, duration_seconds],
+                name=f"Recording {recording_id}"
+            )
+            app.logger.info(f"Successfully scheduled one-time job: {recording_id}")
+            app.logger.info(f"Job will run at: {start_time}")
+        except Exception as e:
+            app.logger.error(f"Failed to schedule one-time job: {e}")
+            
+    # Verify that the job was scheduled
+    job = scheduler.get_job(recording_id)
+    if job:
+        app.logger.info(f"Job verification successful. Job ID: {job.id}")
+        try:
+            if hasattr(job, 'next_run_time'):
+                app.logger.info(f"Next run time: {job.next_run_time}")
+            elif hasattr(job, '_get_run_times'):
+                try:
+                    next_runs = list(job._get_run_times(datetime.now()))
+                    if next_runs:
+                        app.logger.info(f"Next run time: {next_runs[0]}")
+                    else:
+                        app.logger.warning("No upcoming runs found for job")
+                except Exception as e:
+                    app.logger.error(f"Error getting next run time: {e}")
+        except Exception as e:
+            app.logger.error(f"Error checking job details: {e}")
+    else:
+        app.logger.error(f"Job verification failed. No job found with ID: {recording_id}")
 
 # Add this function with your other utility functions
 def clean_up_old_recordings(podcast_uuid, max_recordings):
@@ -460,7 +761,7 @@ def add_station():
 @login_required
 def delete_station(station_id):
     # Find the station
-    station = Station.query.get(station_id)
+    station = db.session.get(Station, station_id)
     
     if station:
         # Delete the station
@@ -472,7 +773,7 @@ def delete_station(station_id):
 @app.route('/record/<int:station_id>')
 def record_station(station_id):
     # Find the station
-    station = Station.query.get(station_id)
+    station = db.session.get(Station, station_id)
     
     if station:
         return render_template('schedule_recording.html', 
@@ -491,7 +792,7 @@ def schedule_recording():
     recurring_type = request.form.get('recurring_type', 'once')
     
     # Find the station
-    station = Station.query.get(station_id)
+    station = db.session.get(Station, station_id)
     
     if not station:
         return "Station not found", 404
@@ -537,6 +838,7 @@ def schedule_recording():
         recording = Recording(
             id=recording_id,
             station_id=station_id,
+            user_id=current_user.id,  # Add this line to store user ID
             start_time=start_datetime,
             duration_minutes=duration,
             duration_seconds=duration * 60,
@@ -588,12 +890,24 @@ def schedule_recording():
             except (ValueError, TypeError):
                 recording.max_recordings = 0  # Default to keeping all
         
-        # Process Nextcloud options
+        # Process Nextcloud options 
         save_to_nextcloud = request.form.get('save_to_nextcloud') == 'on'
         recording.save_to_nextcloud = save_to_nextcloud
         if save_to_nextcloud:
             recording.nextcloud_folder = request.form.get('nextcloud_folder', '')
+            recording.nextcloud_create_folder_structure = request.form.get('nextcloud_create_folder_structure') == 'on'
             recording.nextcloud_status = 'pending'
+        
+        # Process Local Storage options
+        save_to_local = request.form.get('save_to_local') == 'on'
+        recording.save_to_local = save_to_local
+        if save_to_local:
+            recording.local_folder = request.form.get('local_folder', '')
+            recording.create_folder_structure = request.form.get('create_folder_structure') == 'on'
+            recording.local_status = 'pending'
+        
+        # Process Pushover notification option
+        recording.pushover_enabled = request.form.get('pushover_enabled') == 'on'
         
         # Add to the schedule
         db.session.add(recording)
@@ -616,50 +930,28 @@ def schedule_recording():
 
 @app.route('/recordings')
 @login_required
-@password_change_required
 def recordings():
-    now = datetime.now()
+    # Get current user's recordings or all recordings for admin
+    query = Recording.query.options(db.joinedload(Recording.station))
+    if not current_user.is_admin:
+        query = query.filter_by(user_id=current_user.id)
     
-    # Get upcoming recordings from scheduler
-    upcoming_recordings = []
-    for recording in Recording.query.filter(Recording.status == 'scheduled').all():
-        rec_dict = recording.to_dict()
-        # Check if it has an active job
-        job = scheduler.get_job(recording.id)
-        if job and job.next_run_time:
-            rec_dict['next_run_time'] = job.next_run_time
-        upcoming_recordings.append(rec_dict)
+    # Get past recordings (already completed)
+    past_recordings = query.filter(
+        Recording.status.in_(['completed', 'Completed', 'failed', 'Failed'])
+    ).order_by(Recording.end_time.desc()).all()
     
-    # Sort upcoming recordings by next run time or start time
-    upcoming_recordings.sort(key=lambda x: x.get('next_run_time', x.get('start_time', datetime.max)))
+    # Get upcoming recordings (scheduled for the future)
+    upcoming_recordings = query.filter(
+        Recording.status.in_(['scheduled', 'Scheduled'])
+    ).order_by(Recording.start_time.asc()).all()
     
-    # Get past recordings - look for ANY status other than 'scheduled'
-    past_recordings = []
-    
-    # Query with explicit status conditions for better visibility
-    past_query = Recording.query.filter(
-        Recording.status.in_(['completed', 'Completed', 'in_progress', 'failed', 'Failed'])
-    ).all()
-    
-    app.logger.info(f"Found {len(past_query)} past recordings")
-    
-    for recording in past_query:
-        rec_dict = recording.to_dict()
-        # Check if a completed recording is missing its file
-        if recording.status in ['Completed', 'completed']:
-            if not recording.output_file or not os.path.exists(recording.output_file):
-                rec_dict['status'] = 'Missing'
-                app.logger.warning(f"Recording {recording.id} file missing: {recording.output_file}")
-        past_recordings.append(rec_dict)
-    
-    # Sort past recordings by start time (newest first)
-    past_recordings.sort(key=lambda x: x.get('actual_start_time', x.get('start_time', datetime.min)), reverse=True)
-    
-    return render_template('recordings.html', 
-                          title='Recordings',
-                          upcoming_recordings=upcoming_recordings,
-                          past_recordings=past_recordings,
-                          now=now)
+    return render_template(
+        'recordings.html',
+        past_recordings=past_recordings,
+        upcoming_recordings=upcoming_recordings,
+        title='Your Recordings'
+    )
 
 @app.route('/delete_recording/<recording_id>')
 @login_required
@@ -910,13 +1202,46 @@ def health_check():
         db.session.execute('SELECT 1').scalar()
         scheduler_status = scheduler.running
         
+        # Get upcoming jobs
+        upcoming_jobs = []
+        for job in scheduler.get_jobs():
+            try:
+                if hasattr(job, 'next_run_time') and job.next_run_time:
+                    next_run = job.next_run_time.isoformat()
+                elif hasattr(job, '_get_run_times'):
+                    try:
+                        next_runs = list(job._get_run_times(datetime.now()))
+                        next_run = next_runs[0].isoformat() if next_runs else None
+                    except:
+                        next_run = None
+                    
+                upcoming_jobs.append({
+                    'id': job.id,
+                    'name': job.name,
+                    'next_run': next_run
+                })
+            except Exception as e:
+                upcoming_jobs.append({
+                    'id': job.id,
+                    'error': str(e)
+                })
+        
+        # Get timezone info
+        import time
+        system_tz = time.tzname
+        
         status = {
             'status': 'ok',
             'timestamp': datetime.now().isoformat(),
             'scheduler_running': scheduler_status,
             'jobs_count': len(scheduler.get_jobs()),
+            'upcoming_jobs': upcoming_jobs[:5],  # Show the first 5 jobs
             'database': 'connected',
-            'version': '1.0.0'
+            'version': '1.0.8',
+            'timezone': {
+                'system': system_tz,
+                'current_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            }
         }
         return status, 200
     except Exception as e:
@@ -963,61 +1288,48 @@ def admin_dashboard():
 @app.route('/settings', methods=['GET', 'POST'])
 @login_required
 def settings():
+    app.logger.info(f"Settings page accessed by user {current_user.id}")
+    
     # Get or create user settings
     user_settings = UserSettings.query.filter_by(user_id=current_user.id).first()
     if not user_settings:
+        app.logger.info(f"Creating new settings for user {current_user.id}")
         user_settings = UserSettings(user_id=current_user.id)
         db.session.add(user_settings)
         db.session.commit()
-    
-    # Handle form submission
+
     if request.method == 'POST':
-        # Password change section
-        if 'change_password' in request.form:
-            current_password = request.form.get('current_password')
-            new_password = request.form.get('new_password')
-            confirm_password = request.form.get('confirm_password')
-            
-            # Validate inputs
-            if not current_user.check_password(current_password):
-                flash('Current password is incorrect', 'danger')
-            elif new_password != confirm_password:
-                flash('New passwords do not match', 'danger')
-            elif len(new_password) < 8:
-                flash('Password must be at least 8 characters', 'danger')
-            else:
-                # Update password
-                current_user.set_password(new_password)
-                current_user.password_change_required = False
-                db.session.commit()
-                flash('Password successfully changed', 'success')
+        app.logger.info(f"Settings form submitted by user {current_user.id}")
+        app.logger.debug(f"Form data: {request.form}")
         
-        # Nextcloud settings section
-        elif 'update_nextcloud' in request.form:
-            user_settings.nextcloud_url = request.form.get('nextcloud_url', '').rstrip('/')
-            user_settings.nextcloud_username = request.form.get('nextcloud_username', '')
+        try:
+            # Update Nextcloud settings
+            user_settings.nextcloud_url = request.form.get('nextcloud_url', '').strip()
+            user_settings.nextcloud_username = request.form.get('nextcloud_username', '').strip()
+            if request.form.get('nextcloud_password'):
+                user_settings.nextcloud_password = request.form.get('nextcloud_password')
             
-            # Only update password if provided (not empty)
-            new_password = request.form.get('nextcloud_password', '')
-            if new_password:
-                user_settings.nextcloud_password = new_password
-                
+            # Update local storage settings
+            user_settings.local_storage_enabled = 'local_storage_enabled' in request.form
+            user_settings.local_storage_path = request.form.get('local_storage_path', '').strip()
+            
+            # Update Pushover settings
+            user_settings.pushover_api_token = request.form.get('pushover_api_token', '').strip()
+            user_settings.pushover_user_key = request.form.get('pushover_user_key', '').strip()
+            user_settings.pushover_enabled = bool(
+                user_settings.pushover_api_token and user_settings.pushover_user_key
+            )
+            
             db.session.commit()
-            flash('Nextcloud settings updated', 'success')
+            app.logger.info(f"Settings updated successfully for user {current_user.id}")
+            flash('Settings saved successfully', 'success')
             
-            # Test connection if requested
-            if 'test_connection' in request.form:
-                success, message = test_nextcloud_connection(
-                    user_settings.nextcloud_url,
-                    user_settings.nextcloud_username,
-                    user_settings.nextcloud_password
-                )
-                if success:
-                    flash(f'Nextcloud connection successful: {message}', 'success')
-                else:
-                    flash(f'Nextcloud connection failed: {message}', 'danger')
+        except Exception as e:
+            app.logger.error(f"Error saving settings: {str(e)}")
+            db.session.rollback()
+            flash('Error saving settings', 'danger')
     
-    return render_template('settings.html', title='User Settings', settings=user_settings)
+    return render_template('settings.html', title='Settings', settings=user_settings)
 
 def test_nextcloud_connection(nextcloud_url, username, password):
     """Test connection to Nextcloud server"""
@@ -1027,7 +1339,8 @@ def test_nextcloud_connection(nextcloud_url, username, password):
         webdav_url = f"{nextcloud_url}/remote.php/dav/files/{username}/"
         
         # Make a request to list root directory
-        response = requests.propfind(
+        response = requests.request(
+            'PROPFIND',
             webdav_url,
             auth=(username, password),
             headers={'Depth': '0'}
@@ -1047,22 +1360,53 @@ def upload_to_nextcloud(file_path, nextcloud_path, nextcloud_url, username, pass
         import requests
         from pathlib import Path
         
+        # Normalize Nextcloud URL (remove trailing slash if present)
+        if nextcloud_url.endswith('/'):
+            nextcloud_url = nextcloud_url[:-1]
+        
         # Ensure the path starts with a slash
         if not nextcloud_path.startswith('/'):
             nextcloud_path = '/' + nextcloud_path
         
+        # Log the URL for debugging
+        app.logger.info(f"Uploading to Nextcloud URL: {nextcloud_url}/remote.php/dav/files/{username}{nextcloud_path}")
+        
         # Construct the full URL
         webdav_url = f"{nextcloud_url}/remote.php/dav/files/{username}{nextcloud_path}"
         
-        # Create directory if it doesn't exist
+        # Create directory path recursively if needed
         dir_path = str(Path(nextcloud_path).parent)
         if dir_path != '/':
-            dir_url = f"{nextcloud_url}/remote.php/dav/files/{username}{dir_path}"
-            requests.request(
-                'MKCOL', 
-                dir_url,
-                auth=(username, password)
-            )
+            # Split the path into components and create each level
+            path_parts = dir_path.strip('/').split('/')
+            current_path = ''
+            
+            for part in path_parts:
+                current_path += f"/{part}"
+                
+                # Check if this directory level exists
+                dir_url = f"{nextcloud_url}/remote.php/dav/files/{username}{current_path}"
+                app.logger.info(f"Checking directory: {dir_url}")
+                
+                head_response = requests.request(
+                    'PROPFIND', 
+                    dir_url,
+                    auth=(username, password),
+                    headers={'Depth': '0'}
+                )
+                
+                # If directory doesn't exist (not 207 Multi-Status), create it
+                if head_response.status_code != 207:
+                    app.logger.info(f"Creating directory: {dir_url}")
+                    mkdir_response = requests.request(
+                        'MKCOL', 
+                        dir_url,
+                        auth=(username, password)
+                    )
+                    app.logger.info(f"Directory creation response: {mkdir_response.status_code}")
+                    
+                    if mkdir_response.status_code not in [201, 405]:  # 201=Created, 405=Already exists
+                        return False, f"Failed to create directory {current_path}: {mkdir_response.status_code}"
         
         # Upload the file
         with open(file_path, 'rb') as f:
@@ -1072,10 +1416,114 @@ def upload_to_nextcloud(file_path, nextcloud_path, nextcloud_url, username, pass
                 auth=(username, password)
             )
         
+        app.logger.info(f"File upload response: {response.status_code}")
+        
         if response.status_code in [200, 201, 204]:
             return True, "File uploaded successfully"
         else:
             return False, f"Upload failed with status code: {response.status_code}"
+    
+    except Exception as e:
+        app.logger.error(f"Exception during Nextcloud upload: {str(e)}")
+        return False, str(e)
+
+def test_local_storage_access(folder_path):
+    """Test if the application has access to write to the specified folder"""
+    if not folder_path:
+        return False, "No folder path provided"
+        
+    try:
+        # Check if folder exists
+        if not os.path.exists(folder_path):
+            try:
+                # Try to create it
+                os.makedirs(folder_path, exist_ok=True)
+                return True, "Folder created successfully"
+            except Exception as e:
+                return False, f"Could not create folder: {str(e)}"
+        
+        # Check if it's writable by creating a test file
+        test_file = os.path.join(folder_path, ".write_test")
+        try:
+            with open(test_file, 'w') as f:
+                f.write("test")
+            os.remove(test_file)
+            return True, "Folder is writable"
+        except Exception as e:
+            return False, f"Folder exists but is not writable: {str(e)}"
+            
+    except Exception as e:
+        return False, f"Error checking folder: {str(e)}"
+
+# Add this function to your app.py file around line 1550
+def send_pushover_notification(user_id, title, message, url=None, url_title=None):
+    """Send a notification via Pushover API"""
+    try:
+        import requests
+        
+        # Get user settings
+        user_settings = UserSettings.query.filter_by(user_id=user_id).first()
+        if not user_settings or not user_settings.pushover_enabled:
+            return False, "Pushover not enabled"
+            
+        if not user_settings.pushover_api_token or not user_settings.pushover_user_key:
+            return False, "Pushover credentials missing"
+        
+        # Build the request payload
+        payload = {
+            'token': user_settings.pushover_api_token,
+            'user': user_settings.pushover_user_key,
+            'title': title,
+            'message': message,
+        }
+        
+        if url:
+            payload['url'] = url
+            
+        if url_title:
+            payload['url_title'] = url_title
+        
+        # Send the notification
+        response = requests.post(
+            'https://api.pushover.net/1/messages.json',
+            data=payload
+        )
+        
+        app.logger.info(f"Pushover API response: {response.status_code}")
+        
+        if response.status_code == 200:
+            return True, "Notification sent successfully"
+        else:
+            return False, f"Failed to send notification: {response.text}"
+    
+    except Exception as e:
+        app.logger.error(f"Error sending Pushover notification: {str(e)}")
+        return False, str(e)
+
+# Add a function to test Pushover credentials
+def test_pushover_credentials(api_token, user_key):
+    """Test Pushover credentials by sending a test notification"""
+    try:
+        import requests
+        
+        # Build the request payload
+        payload = {
+            'token': api_token,
+            'user': user_key,
+            'title': 'Web Radio Recorder - Test Notification',
+            'message': 'Your Pushover integration is working correctly!',
+        }
+        
+        # Send the notification
+        response = requests.post(
+            'https://api.pushover.net/1/messages.json',
+            data=payload
+        )
+        
+        if response.status_code == 200:
+            return True, "Test notification sent successfully"
+        else:
+            return False, f"Failed to send test notification: {response.text}"
     
     except Exception as e:
         return False, str(e)
@@ -1083,7 +1531,7 @@ def upload_to_nextcloud(file_path, nextcloud_path, nextcloud_url, username, pass
 # Initialize the application
 def init_app():
     import pytz
-    from apscheduler.events import EVENT_ALL
+    from apscheduler.events import EVENT_ALL, EVENT_JOB_EXECUTED, EVENT_JOB_ERROR
     
     with app.app_context():
         # Create database tables
@@ -1126,43 +1574,139 @@ def init_app():
         # Ensure recordings directory exists
         os.makedirs(app.config['RECORDINGS_FOLDER'], exist_ok=True)
         
-        # Configure and start scheduler - ONLY ONCE
-        if not scheduler.running:
-            # Configure scheduler
-            scheduler.configure(timezone=pytz.timezone('UTC'))
-            scheduler.add_listener(lambda event: app.logger.info(f"Job event: {event.code}"), EVENT_ALL)
-            
-            # Initialize any pending recordings
-            recordings = Recording.query.filter_by(status='scheduled').all()
-            now = datetime.now()
-            
-            for recording in recordings:
-                station = Station.query.get(recording.station_id)
-                if not station:
-                    continue
-                    
-                if recording.recurring:
-                    # Schedule recurring job
-                    schedule_recording_job(
-                        recording.id,
-                        station.url,
-                        recording.output_file,
-                        recording.start_time,
-                        recording.duration_seconds,
-                        recording.recurring
-                    )
-                elif recording.start_time > now:
-                    # Schedule one-time job that hasn't passed yet
-                    schedule_recording_job(
-                        recording.id,
-                        station.url,
-                        recording.output_file,
-                        recording.start_time,
-                        recording.duration_seconds
-                    )
+        # Add local storage columns to Recording table if they don't exist
+        inspector = db.inspect(db.engine)
+        recording_columns = [c['name'] for c in inspector.get_columns('recording')]
+        
+        new_columns = {
+            'save_to_local': 'BOOLEAN DEFAULT FALSE',
+            'local_folder': 'VARCHAR(255)',
+            'create_folder_structure': 'BOOLEAN DEFAULT TRUE',
+            'local_status': 'VARCHAR(20)',
+            'local_error': 'TEXT',
+            'nextcloud_create_folder_structure': 'BOOLEAN DEFAULT TRUE',
+            'end_time': 'DATETIME',
+            'pushover_enabled': 'BOOLEAN DEFAULT FALSE'
+        }
+        
+        for col_name, col_type in new_columns.items():
+            if col_name not in recording_columns:
+                db.session.execute(text(f'ALTER TABLE recording ADD COLUMN {col_name} {col_type}'))
+        
+        # Add local storage columns to UserSettings table if they don't exist
+        user_settings_columns = [c['name'] for c in inspector.get_columns('user_settings')]
+        
+        new_settings_columns = {
+            'local_storage_enabled': 'BOOLEAN DEFAULT FALSE',
+            'local_storage_path': 'VARCHAR(255)',
+            'create_folder_structure': 'BOOLEAN DEFAULT TRUE',
+            'pushover_api_token': 'VARCHAR(100)',
+            'pushover_user_key': 'VARCHAR(100)',
+            'pushover_enabled': 'BOOLEAN DEFAULT FALSE'
+        }
+        
+        for col_name, col_type in new_settings_columns.items():
+            if col_name not in user_settings_columns:
+                db.session.execute(text(f'ALTER TABLE user_settings ADD COLUMN {col_name} {col_type}'))
+        
+        # Add user_id to Recording table if it doesn't exist
+        if 'user_id' not in recording_columns:
+            db.session.execute(text('ALTER TABLE recording ADD COLUMN user_id INTEGER'))
+            db.session.commit()
+        
+        db.session.commit()
+        
+        # Get all scheduled recordings from the database
+        now = datetime.now()
+        recordings = Recording.query.filter(
+            Recording.status.in_(['scheduled', 'Scheduled'])
+        ).all()
+        
+        for recording in recordings:
+            station = Station.query.get(recording.station_id)
+            if not station:
+                continue
+                
+            if recording.recurring:
+                # Schedule recurring job
+                schedule_recording_job(
+                    recording.id,
+                    station.url,
+                    recording.output_file,
+                    recording.start_time,
+                    recording.duration_seconds,
+                    recording.recurring
+                )
+            elif recording.start_time > now:
+                # Schedule one-time job that hasn't passed yet
+                schedule_recording_job(
+                    recording.id,
+                    station.url,
+                    recording.output_file,
+                    recording.start_time,
+                    recording.duration_seconds
+                )
             
             # Start the scheduler
             scheduler.start()
+        
+        # Enhanced logging for scheduler
+        def job_executed_listener(event):
+            job = scheduler.get_job(event.job_id)
+            if job:
+                app.logger.info(f"Job executed successfully: {job.name} (ID: {job.id})")
+            else:
+                app.logger.info(f"Job executed successfully: {event.job_id}")
+        
+        def job_error_listener(event):
+            job = scheduler.get_job(event.job_id)
+            if job:
+                app.logger.error(f"Job failed: {job.name} (ID: {job.id})")
+            else:
+                app.logger.error(f"Job failed: {event.job_id}")
+            
+            # Get the exception info if available
+            if event.exception:
+                app.logger.error(f"Exception: {event.exception}")
+                if event.traceback:
+                    app.logger.error(f"Traceback: {event.traceback}")
+        
+        # Add listeners for job execution and errors
+        scheduler.add_listener(job_executed_listener, EVENT_JOB_EXECUTED)
+        scheduler.add_listener(job_error_listener, EVENT_JOB_ERROR)
+        
+        # Enhanced logging for starting scheduler
+        app.logger.info(f"Starting scheduler with {len(scheduler.get_jobs())} jobs")
+        
+        if not scheduler.running:
+            try:
+                scheduler.start()
+                app.logger.info("Scheduler started successfully")
+            except Exception as e:
+                app.logger.error(f"Failed to start scheduler: {e}")
+        else:
+            app.logger.info("Scheduler already running")
+            
+        # Verify that scheduler is running
+        if scheduler.running:
+            app.logger.info("Scheduler is running")
+            
+            # List all jobs
+            jobs = scheduler.get_jobs()
+            app.logger.info(f"Total jobs: {len(jobs)}")
+            
+            for job in jobs:
+                try:
+                    if hasattr(job, 'next_run_time') and job.next_run_time:
+                        next_run = job.next_run_time
+                    else:
+                        next_run = "Unknown"
+                        
+                    app.logger.info(f"Job: {job.name} (ID: {job.id}), Next run: {next_run}")
+                except Exception as e:
+                    app.logger.error(f"Error getting job details: {e}")
+        else:
+            app.logger.error("Scheduler is NOT running")
     
     # Setup graceful shutdown - ONLY ONCE
     def graceful_shutdown():
@@ -1175,67 +1719,179 @@ def init_app():
     import atexit
     atexit.register(graceful_shutdown)
 
-@app.route('/debug/scheduler')
-def debug_scheduler():
-    """Debug info about scheduler"""
-    jobs = []
-    for job in scheduler.get_jobs():
-        trigger_info = {}
-        if hasattr(job.trigger, 'run_date'):
-            trigger_info['run_date'] = job.trigger.run_date.isoformat() if job.trigger.run_date else None
-        elif hasattr(job.trigger, 'fields'):
-            trigger_info['fields'] = {f.name: str(f) for f in job.trigger.fields}
-        
-        jobs.append({
-            'id': job.id,
-            'name': job.name,
-            'next_run_time': job.next_run_time.isoformat() if job.next_run_time else None,
-            'trigger': str(job.trigger),
-            'trigger_info': trigger_info,
-            'func': job.func.__name__,
-            'args': str(job.args),
-            'kwargs': str(job.kwargs),
-            'misfire_grace_time': job.misfire_grace_time,
-            'max_instances': job.max_instances
-        })
-    
-    # Get environment info
-    import platform
-    import pytz
-    
-    env_info = {
-        'os': platform.platform(),
-        'python': platform.python_version(),
-        'timezone': str(pytz.timezone('UTC')),
-        'current_time': datetime.now().isoformat(),
-        'utc_time': datetime.utcnow().isoformat()
-    }
-    
-    # Add scheduler state
-    scheduler_state = {
-        'running': scheduler.running,
-        'jobs_count': len(scheduler.get_jobs()),
-        'jobstores': list(scheduler._jobstores.keys()),
-        'timezone': str(scheduler.timezone) if hasattr(scheduler, 'timezone') else None
-    }
-    
-    # Add Docker info if in Docker container
-    docker_info = {'in_container': os.path.exists('/.dockerenv')}
-    if docker_info['in_container']:
+    # Add a scheduled job to check for incomplete recordings every 5 minutes
+    if not scheduler.get_job('check_incomplete_recordings'):
+        scheduler.add_job(
+            check_incomplete_recordings,
+            'interval',
+            minutes=5,
+            id='check_incomplete_recordings',
+            name='Check Incomplete Recordings'
+        )
+        app.logger.info("Scheduled watchdog for incomplete recordings")
+
+# 1. Add a watchdog for recordings that checks for incomplete recordings
+def check_incomplete_recordings():
+    """Check for recordings that were interrupted and resume them if needed"""
+    with app.app_context():
         try:
-            with open('/etc/timezone', 'r') as f:
-                docker_info['container_timezone'] = f.read().strip()
-        except:
-            docker_info['container_timezone'] = 'Could not read /etc/timezone'
-    
-    response = {
-        'scheduler_state': scheduler_state,
-        'jobs': jobs,
-        'environment': env_info,
-        'docker': docker_info
-    }
-    
-    return response
+            app.logger.info("Running check for incomplete recordings")
+            now = datetime.now()
+            
+            # Find recordings that are in_progress but started more than their duration ago
+            in_progress_recordings = Recording.query.filter_by(status='in_progress').all()
+            app.logger.info(f"Found {len(in_progress_recordings)} recordings with 'in_progress' status")
+            
+            fixed_count = 0
+            for recording in in_progress_recordings:
+                try:
+                    if not recording.actual_start_time:
+                        app.logger.warning(f"Recording {recording.id} has no actual_start_time, marking as failed")
+                        recording.status = 'failed'
+                        recording.error_message = 'Missing start time information'
+                        db.session.commit()
+                        continue
+                        
+                    expected_end_time = recording.actual_start_time + timedelta(seconds=recording.duration_seconds)
+                    
+                    # If expected end time has passed but recording is still in_progress
+                    if now > expected_end_time + timedelta(minutes=2):  # Add 2 minute buffer for processing
+                        app.logger.warning(f"Found interrupted recording: {recording.id}, expected to end at {expected_end_time}")
+                        
+                        # Check if the output file exists and its size/duration
+                        if recording.output_file and os.path.exists(recording.output_file):
+                            try:
+                                # Get file info
+                                file_size = os.path.getsize(recording.output_file)
+                                recording.file_size = file_size
+                                
+                                # Try to get audio duration using ffprobe
+                                audio_duration = 0
+                                try:
+                                    probe_cmd = [
+                                        'ffprobe', 
+                                        '-v', 'error', 
+                                        '-show_entries', 'format=duration', 
+                                        '-of', 'default=noprint_wrappers=1:nokey=1', 
+                                        recording.output_file
+                                    ]
+                                    audio_duration = float(subprocess.check_output(probe_cmd, timeout=15).decode('utf-8').strip())
+                                    app.logger.info(f"File has {audio_duration:.2f} seconds of audio content")
+                                except (subprocess.SubprocessError, ValueError, TimeoutError) as e:
+                                    app.logger.warning(f"Could not determine audio duration: {e}")
+                                except Exception as e:
+                                    app.logger.warning(f"Unexpected error checking audio duration: {str(e)}")
+                                
+                                min_content_size = 8192  # At least 8KB to consider non-empty
+                                completion_threshold = 0.80  # 80% of expected duration to consider complete
+                                
+                                # Rule 1: File has significant size
+                                # Rule 2: Duration is at least completion_threshold of expected
+                                if (file_size > min_content_size and 
+                                    (audio_duration > recording.duration_seconds * completion_threshold or 
+                                     file_size > 1024 * 1024)):  # At least 1MB
+                                    
+                                    app.logger.info(f"Incomplete recording has sufficient content, marking as completed: {recording.id}")
+                                    recording.status = 'completed'
+                                    recording.end_time = expected_end_time
+                                    fixed_count += 1
+                                else:
+                                    # File exists but too small or short - try to reschedule
+                                    app.logger.info(f"Incomplete recording needs retry: {recording.id} (size: {file_size} bytes)")
+                                    
+                                    # Calculate remaining duration
+                                    if audio_duration > 0:
+                                        remaining_duration = max(0, recording.duration_seconds - audio_duration)
+                                    else:
+                                        elapsed_seconds = (now - recording.actual_start_time).total_seconds()
+                                        remaining_duration = max(0, recording.duration_seconds - elapsed_seconds)
+                                    
+                                    app.logger.info(f"Calculated {remaining_duration:.2f} seconds remaining to record")
+                                    
+                                    if remaining_duration > 30:  # Only retry if at least 30 seconds remain
+                                        # Get station URL safely
+                                        station_url = None
+                                        try:
+                                            if hasattr(recording, 'station') and recording.station:
+                                                station_url = recording.station.url
+                                            else:
+                                                station = Station.query.get(recording.station_id)
+                                                if station:
+                                                    station_url = station.url
+                                                else:
+                                                    raise ValueError(f"Cannot find station for recording {recording.id}")
+                                                    
+                                            # Schedule a new job to complete the recording
+                                            schedule_recording_job(
+                                                recording.id,
+                                                station_url,
+                                                recording.output_file,
+                                                now,  # Start immediately
+                                                remaining_duration
+                                            )
+                                            recording.status = 'scheduled'
+                                            app.logger.info(f"Scheduled retry for recording {recording.id}")
+                                            fixed_count += 1
+                                        except Exception as schedule_err:
+                                            app.logger.error(f"Failed to reschedule recording: {schedule_err}")
+                                            recording.status = 'failed'
+                                            recording.error_message = f'Failed to reschedule: {str(schedule_err)}'
+                                    else:
+                                        # Not enough time left, mark as completed if file has some content
+                                        if file_size > min_content_size:
+                                            recording.status = 'completed'
+                                            recording.end_time = expected_end_time
+                                            app.logger.info(f"Not enough time to retry but has content, marking as completed: {recording.id}")
+                                            fixed_count += 1
+                                        else:
+                                            recording.status = 'failed'
+                                            recording.error_message = 'Recording interrupted and insufficient content recorded'
+                            except Exception as e:
+                                app.logger.error(f"Error checking file for recording {recording.id}: {e}")
+                                recording.status = 'failed'
+                                recording.error_message = f'Error checking file: {str(e)}'
+                        else:
+                            # File doesn't exist, mark as failed
+                            app.logger.warning(f"Output file missing for interrupted recording: {recording.id}")
+                            recording.status = 'failed'
+                            recording.error_message = 'Recording file missing'
+                    
+                    db.session.commit()
+                except Exception as individual_error:
+                    app.logger.error(f"Error processing recording {recording.id}: {individual_error}")
+                    # Continue with next recording instead of failing the whole check
+                    try:
+                        db.session.rollback()  # Rollback any partial changes
+                    except Exception as rollback_error:
+                        app.logger.error(f"Error during rollback: {rollback_error}")
+            
+            # Also check for recordings that have been in 'scheduled' status for too long
+            stale_scheduled = Recording.query.filter(
+                Recording.status == 'scheduled',
+                Recording.start_time < now - timedelta(hours=2)  # Should have started over 2 hours ago
+            ).all()
+            
+            for rec in stale_scheduled:
+                try:
+                    app.logger.warning(f"Found stale scheduled recording {rec.id} that should have started at {rec.start_time}")
+                    job = scheduler.get_job(rec.id)
+                    if not job:
+                        app.logger.info(f"No job found for recording {rec.id}, marking as failed")
+                        rec.status = 'failed'
+                        rec.error_message = 'Scheduled job not found'
+                    db.session.commit()
+                except Exception as e:
+                    app.logger.error(f"Error handling stale scheduled recording: {e}")
+            
+            app.logger.info(f"Check complete. Fixed {fixed_count} recordings out of {len(in_progress_recordings)}")
+            
+        except Exception as e:
+            app.logger.error(f"Error in check_incomplete_recordings: {e}")
+            # Ensure database session is rolled back on error
+            try:
+                db.session.rollback()
+            except Exception as rollback_error:
+                app.logger.error(f"Error during rollback: {rollback_error}")
 
 @app.route('/debug/find_orphaned_files')
 @login_required
