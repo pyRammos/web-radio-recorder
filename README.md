@@ -2,7 +2,7 @@
 
 A web-based application to schedule and record internet radio streams, manage recordings, and generate podcast feeds.
 
-![Web Radio Recorder](https://raw.githubusercontent.com/pyRammos/web-radio-recorder/main/static/screenshot.png)
+![Web Radio Recorder Screenshot](docs/images/main-interface.png)
 
 ## Features
 
